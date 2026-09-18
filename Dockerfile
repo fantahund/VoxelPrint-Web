@@ -28,6 +28,9 @@ ENV PORT=3000 \
     VOXELPRINT_DATA_DIR=/data \
     VOXELPRINT_WEB_ROOT=/app/web/dist
 
+# Pre-create the data directory and set ownership so named volumes inherit it.
+RUN mkdir /data && chown node:node /data
+
 # Uploaded projects live outside the image.
 VOLUME ["/data"]
 EXPOSE 3000
