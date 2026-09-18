@@ -243,10 +243,219 @@ export function solidsBySlot(
   }
 
   const wall = Math.max(options.wallMillimetres, TOO_THIN);
-  for (const { slot, corners, normal } of surface.values()) {
+  for (const { slot, corners, normal } of mergeCoplanar([...surface.values()])) {
     (grouped[slot] as Solid[]).push(thicken(corners, normal, wall));
   }
   return grouped;
+}
+
+/** A face on its way to becoming a wall. */
+interface Facet {
+  slot: number;
+  corners: Point[];
+  normal: Point;
+}
+
+/** An axis aligned rectangle, in the plane it lies in. */
+interface Tile {
+  u0: number;
+  v0: number;
+  u1: number;
+  v1: number;
+}
+
+/**
+ * Joins faces that lie flat against each other into single larger ones.
+ *
+ * <p>Without this a floor is a hundred separate slabs that touch along their
+ * edges, and a slicer draws a perimeter around every one of them: the print
+ * comes out as a grid of walled cells with infill in each, wasting plastic and
+ * time on walls buried inside a solid surface. The note this file used to carry
+ * -- that a slicer unions overlapping solids, so the walls between them cost
+ * only file size -- is true of solids that overlap and false of solids that
+ * merely touch, which is what a wall of blocks is.
+ *
+ * <p>Only exact merges are made: same filament, same plane, same way up, and
+ * the two rectangles must share a whole edge so their union is a rectangle
+ * again. The printed surface is therefore identical to the last decimal; what
+ * changes is how many pieces it is made of.
+ *
+ * <p>Anything that is not an axis aligned rectangle -- a torch's tilted
+ * rectangles, a chain turned forty-five degrees -- is passed through untouched.
+ * Those are the minority, and merging them would mean general polygon union for
+ * very little gain.
+ */
+function mergeCoplanar(faces: readonly Facet[]): Facet[] {
+  /** Rectangles waiting to be merged, gathered by the plane they sit in. */
+  const planes = new Map<string, { axis: number; sign: number; at: number; slot: number; tiles: Tile[] }>();
+  const passed: Facet[] = [];
+
+  for (const face of faces) {
+    const flat = asTile(face);
+    if (flat === null) {
+      passed.push(face);
+      continue;
+    }
+    const { axis, sign, at, tile } = flat;
+    const key = `${face.slot}|${axis}|${sign}|${at}`;
+    const plane = planes.get(key);
+    if (plane === undefined) {
+      planes.set(key, { axis, sign, at, slot: face.slot, tiles: [tile] });
+    } else {
+      plane.tiles.push(tile);
+    }
+  }
+
+  const merged: Facet[] = [...passed];
+  for (const plane of planes.values()) {
+    for (const tile of joinTiles(plane.tiles)) {
+      merged.push(facetOf(plane.axis, plane.sign, plane.at, plane.slot, tile));
+    }
+  }
+  return merged;
+}
+
+/**
+ * Reads a face as a rectangle in an axis aligned plane, or null.
+ *
+ * <p>A face qualifies when all four corners share one coordinate -- that is the
+ * plane -- and the other two take exactly two values each, which makes the
+ * outline a rectangle rather than a slanted or degenerate quad.
+ */
+function asTile(
+  face: Facet,
+): { axis: number; sign: number; at: number; tile: Tile } | null {
+  for (let axis = 0; axis < 3; axis++) {
+    const at = face.corners[0]?.[axis];
+    if (at === undefined || !face.corners.every((corner) => corner[axis] === at)) {
+      continue;
+    }
+    // The face lies in this plane; the normal has to point along it too, or the
+    // quad is wound in a way this cannot reproduce.
+    const along = face.normal[axis] as number;
+    if (Math.abs(Math.abs(along) - 1) > 1e-6) {
+      return null;
+    }
+
+    const [u, v] = others(axis);
+    const us = [...new Set(face.corners.map((corner) => corner[u] as number))].sort((a, b) => a - b);
+    const vs = [...new Set(face.corners.map((corner) => corner[v] as number))].sort((a, b) => a - b);
+    if (us.length !== 2 || vs.length !== 2) {
+      return null;
+    }
+    return {
+      axis,
+      sign: along > 0 ? 1 : -1,
+      at,
+      tile: { u0: us[0] as number, v0: vs[0] as number, u1: us[1] as number, v1: vs[1] as number },
+    };
+  }
+  return null;
+}
+
+/** The two axes that are not this one, in ascending order. */
+function others(axis: number): [number, number] {
+  return axis === 0 ? [1, 2] : axis === 1 ? [0, 2] : [0, 1];
+}
+
+/**
+ * Greedily joins rectangles that share a whole edge.
+ *
+ * <p>Two passes repeated until nothing more joins: side by side along u, then
+ * stacked along v. Only whole edges, so the union is always a rectangle and the
+ * covered area never changes -- which is what keeps the surface identical.
+ */
+function joinTiles(tiles: readonly Tile[]): Tile[] {
+  let current = [...tiles];
+
+  for (let pass = 0; pass < 64; pass++) {
+    const before = current.length;
+    current = joinAlong(current, true);
+    current = joinAlong(current, false);
+    if (current.length === before) {
+      break;
+    }
+  }
+  return current;
+}
+
+/**
+ * One joining pass.
+ *
+ * @param alongU whether to join neighbours side by side rather than stacked
+ */
+function joinAlong(tiles: readonly Tile[], alongU: boolean): Tile[] {
+  // Rectangles can only join when the edge they would share is the whole of
+  // both their sides, so they are grouped by that side first.
+  const rows = new Map<string, Tile[]>();
+  for (const tile of tiles) {
+    const key = alongU ? `${tile.v0}|${tile.v1}` : `${tile.u0}|${tile.u1}`;
+    const row = rows.get(key);
+    if (row === undefined) {
+      rows.set(key, [tile]);
+    } else {
+      row.push(tile);
+    }
+  }
+
+  const joined: Tile[] = [];
+  for (const row of rows.values()) {
+    row.sort((a, b) => (alongU ? a.u0 - b.u0 : a.v0 - b.v0));
+    let open: Tile | null = null;
+    for (const tile of row) {
+      if (open === null) {
+        open = { ...tile };
+        continue;
+      }
+      const touches = alongU ? open.u1 === tile.u0 : open.v1 === tile.v0;
+      if (touches) {
+        if (alongU) {
+          open.u1 = tile.u1;
+        } else {
+          open.v1 = tile.v1;
+        }
+      } else {
+        joined.push(open);
+        open = { ...tile };
+      }
+    }
+    if (open !== null) {
+      joined.push(open);
+    }
+  }
+  return joined;
+}
+
+/**
+ * Turns a rectangle back into a face wound the way its normal asks for.
+ *
+ * <p>The winding is checked rather than worked out: the corner order that faces
+ * one way for a plane of X is the reverse for a plane of Y, and reasoning about
+ * which is which per axis is exactly the kind of thing that comes out inside
+ * out. Building one order and turning it round when it disagrees cannot.
+ */
+function facetOf(axis: number, sign: number, at: number, slot: number, tile: Tile): Facet {
+  const [u, v] = others(axis);
+  const corner = (cu: number, cv: number): Point => {
+    const point = [0, 0, 0];
+    point[axis] = at;
+    point[u] = cu;
+    point[v] = cv;
+    return point as unknown as Point;
+  };
+
+  let corners = [
+    corner(tile.u0, tile.v0),
+    corner(tile.u1, tile.v0),
+    corner(tile.u1, tile.v1),
+    corner(tile.u0, tile.v1),
+  ];
+  const normal: Point = [0, 0, 0].map((_, i) => (i === axis ? sign : 0)) as unknown as Point;
+  const made = normalOf(corners);
+  if (made === null || (made[axis] as number) * sign < 0) {
+    corners = [...corners].reverse();
+  }
+  return { slot, corners, normal };
 }
 
 /**
