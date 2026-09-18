@@ -160,21 +160,20 @@ export function solidsBySlot(
         corner[2] === 0 ? cz - sz / 2 : cz + sz / 2,
       ),
     );
+    (grouped[slot] as Solid[]).push(box);
 
-    if (options.geometry !== "shell") {
-      (grouped[slot] as Solid[]).push(box);
-      continue;
-    }
-
-    // Named per box rather than per block, so the two boxes of a shape that has
-    // two cancel where they meet. A box is never a sheet with no thickness, so
-    // there is nothing here for that rule to protect.
-    const owner = `box:${i}`;
-    for (const face of FACES) {
-      const corners = face.map((corner) => box[corner] as Point);
-      const normal = normalOf(corners);
-      if (normal !== null) {
-        shelled.push({ slot, corners, normal, owner });
+    if (options.geometry === "shell") {
+      // A block the game draws by hand -- a chest, a statue -- has no model to
+      // shell, so its box is what there is, and a box is printed solid for the
+      // same reason every other box is: walls inside it would be walls nobody
+      // sees, and a solid is what infill can go into. Its sides still hide what
+      // presses against them and print nothing themselves.
+      for (const face of FACES) {
+        const corners = face.map((corner) => box[corner] as Point);
+        const normal = normalOf(corners);
+        if (normal !== null) {
+          shelled.push({ slot, corners, normal, owner: `box:${i}`, blocker: true });
+        }
       }
     }
   }
@@ -214,19 +213,20 @@ export function solidsBySlot(
   // 1.2 mm wall is thinner than the three perimeters a printer profile asks
   // for, so a shell is filled with perimeters and never with infill. Measured
   // on two builds, 44 % and 22 % of the drawn blocks are such cubes.
+  const shapes = shapesPerEntry(model);
   const boxed = new Map<
     string,
-    { slot: number; shape: [number, number, number, number, number, number]; cells: Array<[number, number, number]> }
+    { slot: number; shape: Box[]; cells: Array<[number, number, number]> }
   >();
   for (const mesh of model.meshes) {
-    const shape = asSolidBox(mesh.quads);
+    const shape = solidShapeOf(mesh.quads, shapes.get(mesh.paletteIndex) ?? []);
     if (shape === null) {
       continue;
     }
     const slot = slotOf(mesh.paletteIndex);
     // Grouped by shape as well as filament: blocks of one shape sit on the grid
     // the same way, which is what lets them be merged as whole cells.
-    const key = `${slot}|${shape.join(",")}`;
+    const key = `${slot}|${shape.map((box) => box.join(",")).join(";")}`;
     const group = boxed.get(key) ?? { slot, shape, cells: [] };
     for (let block = 0; block < mesh.blocks; block++) {
       group.cells.push([
@@ -239,38 +239,49 @@ export function solidsBySlot(
   }
 
   for (const { slot, shape, cells } of boxed.values()) {
-    // Only an axis the shape fills from end to end may be merged along. A dirt
-    // path fills its cell across but stops a sixteenth short of the top, and
-    // stacking two of them would close a gap that ought to be there.
-    const whole: [boolean, boolean, boolean] = [0, 1, 2].map(
-      (axis) =>
-        Math.abs(shape[axis] as number) < 1e-6 && Math.abs((shape[axis + 3] as number) - 1) < 1e-6,
-    ) as [boolean, boolean, boolean];
+    // Each box of the shape is joined on its own terms. A stair's lower slab
+    // runs the whole width of its cell and joins with the one beside it; its
+    // step does not run the whole depth and does not.
+    for (const part of shape) {
+      // Only an axis a part fills from end to end may be joined along. A dirt
+      // path fills its cell across but stops a sixteenth short of the top, and
+      // stacking two would close a gap that ought to be there.
+      const whole: [boolean, boolean, boolean] = [0, 1, 2].map(
+        (axis) =>
+          Math.abs(part[axis] as number) < 1e-6 && Math.abs((part[axis + 3] as number) - 1) < 1e-6,
+      ) as [boolean, boolean, boolean];
 
-    for (const box of mergeBoxes(cells, whole)) {
-      const [x0, y0, z0, x1, y1, z1] = box;
-      const corners = CORNERS.map((corner) =>
-        place(
-          (corner[0] === 0 ? x0 + (shape[0] as number) : x1 - 1 + (shape[3] as number)) - model.size.width / 2,
-          (corner[1] === 0 ? y0 + (shape[1] as number) : y1 - 1 + (shape[4] as number)) - model.size.height / 2,
-          (corner[2] === 0 ? z0 + (shape[2] as number) : z1 - 1 + (shape[5] as number)) - model.size.depth / 2,
-        ),
-      );
-      (grouped[slot] as Solid[]).push(corners);
-      // Its sides still hide what presses against them, but print nothing of
-      // their own: they are inside the solid already.
-      for (const face of FACES) {
-        const side = face.map((corner) => corners[corner] as Point);
-        const normal = normalOf(side);
-        if (normal !== null) {
-          shelled.push({ slot, corners: side, normal, owner: `box:${box.join(",")}`, blocker: true });
+      for (const box of mergeBoxes(cells, whole)) {
+        const [x0, y0, z0, x1, y1, z1] = box;
+        const corners = CORNERS.map((corner) =>
+          place(
+            (corner[0] === 0 ? x0 + (part[0] as number) : x1 - 1 + (part[3] as number)) - model.size.width / 2,
+            (corner[1] === 0 ? y0 + (part[1] as number) : y1 - 1 + (part[4] as number)) - model.size.height / 2,
+            (corner[2] === 0 ? z0 + (part[2] as number) : z1 - 1 + (part[5] as number)) - model.size.depth / 2,
+          ),
+        );
+        (grouped[slot] as Solid[]).push(corners);
+        // Its sides still hide what presses against them, but print nothing of
+        // their own: they are inside the solid already.
+        for (const face of FACES) {
+          const side = face.map((corner) => corners[corner] as Point);
+          const normal = normalOf(side);
+          if (normal !== null) {
+            shelled.push({
+              slot,
+              corners: side,
+              normal,
+              owner: `box:${part.join(",")}:${box.join(",")}`,
+              blocker: true,
+            });
+          }
         }
       }
     }
   }
 
   for (const mesh of model.meshes) {
-    if (asSolidBox(mesh.quads) !== null) {
+    if (solidShapeOf(mesh.quads, shapes.get(mesh.paletteIndex) ?? []) !== null) {
       // Printed as a box above; its faces would only duplicate the box's sides.
       continue;
     }
@@ -344,6 +355,18 @@ interface Facet {
    */
   blocker?: boolean;
 }
+
+/**
+ * Area below which a leftover is not a gap.
+ *
+ * <p>A block's face is a sixteenth of a block at the smallest, which at any
+ * printable size is far above this. What lands under it is the last bit of a
+ * float, not a hole.
+ */
+const SLIVER = 1e-6;
+
+/** A block's box in its own cell: x0, y0, z0, x1, y1, z1, each 0 to 1. */
+export type Box = [number, number, number, number, number, number];
 
 /** An axis aligned rectangle, in the plane it lies in. */
 interface Tile {
@@ -771,44 +794,75 @@ export function round(value: number): number {
  * swap safe; anything else -- a stair, a slab, a torch -- does not and keeps
  * its shell.
  */
-function asSolidBox(quads: Float32Array): [number, number, number, number, number, number] | null {
-  if (quads.length === 0) {
+export function solidShapeOf(quads: Float32Array, shape: readonly Box[]): Box[] | null {
+  if (quads.length === 0 || shape.length === 0) {
     return null;
   }
-
-  // The box the model is tested against is its own extent: if every face lies
-  // on that box and covers it, the model is that box's surface and nothing
-  // else.
-  const low = [1, 1, 1];
-  const high = [0, 0, 0];
-  for (let i = 0; i < quads.length; i += 3) {
+  for (const box of shape) {
     for (let axis = 0; axis < 3; axis++) {
-      const value = quads[i + axis] as number;
-      low[axis] = Math.min(low[axis] as number, value);
-      high[axis] = Math.max(high[axis] as number, value);
-    }
-  }
-  for (let axis = 0; axis < 3; axis++) {
-    if ((high[axis] as number) - (low[axis] as number) < 1e-3) {
-      // Flat: a sheet, not a box.
-      return null;
-    }
-  }
-
-  // Rectangles seen on each of the six sides, in that side's own coordinates.
-  const sides: Tile[][] = [[], [], [], [], [], []];
-
-  for (let face = 0; face < quads.length / 12; face++) {
-    const at = face * 12;
-    for (let i = at; i < at + 12; i++) {
-      const value = quads[i] as number;
-      if (value < -1e-6 || value > 1 + 1e-6) {
+      if ((box[axis + 3] as number) - (box[axis] as number) < 1e-3) {
+        // A shape with no thickness is not something to print solid.
         return null;
       }
     }
+  }
 
-    let side = -1;
-    for (let axis = 0; axis < 3 && side < 0; axis++) {
+  // Every side of every box, whether anything can see it or not. A face the
+  // model draws has to land on one of these.
+  const onSides = new Map<string, Tile[]>();
+  // What the shape shows to the outside: each side of each box, less the parts
+  // another box of the same shape is pressed against.
+  const outside = new Map<string, Tile[]>();
+  for (const box of shape) {
+    for (let axis = 0; axis < 3; axis++) {
+      const [u, v] = axis === 0 ? [1, 2] : axis === 1 ? [0, 2] : [0, 1];
+      for (const far of [false, true]) {
+        const at = far ? (box[axis + 3] as number) : (box[axis] as number);
+        const side: Tile = {
+          u0: box[u] as number,
+          v0: box[v] as number,
+          u1: box[u + 3] as number,
+          v1: box[v + 3] as number,
+        };
+        const behind = shape.filter((other) => {
+          if (other === box) {
+            return false;
+          }
+          const lo = other[axis] as number;
+          const hi = other[axis + 3] as number;
+          const touches = far ? lo <= at + 1e-6 && hi > at + 1e-6 : hi >= at - 1e-6 && lo < at - 1e-6;
+          return (
+            touches &&
+            (other[u] as number) < side.u1 - 1e-6 &&
+            (other[u + 3] as number) > side.u0 + 1e-6 &&
+            (other[v] as number) < side.v1 - 1e-6 &&
+            (other[v + 3] as number) > side.v0 + 1e-6
+          );
+        });
+        const blockers = behind.map((other) => ({
+          u0: other[u] as number,
+          v0: other[v] as number,
+          u1: other[u + 3] as number,
+          v1: other[v + 3] as number,
+        }));
+        const key = `${axis}|${round(at)}`;
+        const all = onSides.get(key) ?? [];
+        all.push(side);
+        onSides.set(key, all);
+
+        const known = outside.get(key) ?? [];
+        known.push(...uncovered(side, blockers));
+        outside.set(key, known);
+      }
+    }
+  }
+
+  // What the model draws, in the same terms.
+  const drawn = new Map<string, Tile[]>();
+  for (let face = 0; face < quads.length / 12; face++) {
+    const at = face * 12;
+    let placed = false;
+    for (let axis = 0; axis < 3 && !placed; axis++) {
       const first = quads[at + axis] as number;
       let flat = true;
       for (let corner = 1; corner < 4; corner++) {
@@ -820,15 +874,6 @@ function asSolidBox(quads: Float32Array): [number, number, number, number, numbe
       if (!flat) {
         continue;
       }
-      if (Math.abs(first - (low[axis] as number)) < 1e-6) {
-        side = axis * 2;
-      } else if (Math.abs(first - (high[axis] as number)) < 1e-6) {
-        side = axis * 2 + 1;
-      } else {
-        // Flat, but somewhere inside the box rather than on its surface.
-        return null;
-      }
-
       const [u, v] = axis === 0 ? [1, 2] : axis === 1 ? [0, 2] : [0, 1];
       const us: number[] = [];
       const vs: number[] = [];
@@ -836,40 +881,94 @@ function asSolidBox(quads: Float32Array): [number, number, number, number, numbe
         us.push(quads[at + corner * 3 + u] as number);
         vs.push(quads[at + corner * 3 + v] as number);
       }
-      (sides[side] as Tile[]).push({
-        u0: Math.min(...us),
-        v0: Math.min(...vs),
-        u1: Math.max(...us),
-        v1: Math.max(...vs),
-      });
+      const key = `${axis}|${round(first)}`;
+      const known = drawn.get(key) ?? [];
+      known.push({ u0: Math.min(...us), v0: Math.min(...vs), u1: Math.max(...us), v1: Math.max(...vs) });
+      drawn.set(key, known);
+      placed = true;
     }
-    if (side < 0) {
+    if (!placed) {
+      // A tilted face: the model is not the surface of its boxes.
       return null;
     }
   }
 
-  // The area each side covers, counted once however many faces lie on it. A
-  // grass block draws its sides twice -- the earth and the green over it -- and
-  // adding the two up would say the side was covered twice over and throw the
-  // block out of a swap it is perfectly safe for.
-  for (let axis = 0; axis < 3; axis++) {
-    const [u, v] = axis === 0 ? [1, 2] : axis === 1 ? [0, 2] : [0, 1];
-    const want =
-      ((high[u] as number) - (low[u] as number)) * ((high[v] as number) - (low[v] as number));
-    for (const side of [axis * 2, axis * 2 + 1]) {
-      if (Math.abs(unionArea(sides[side] as Tile[]) - want) > 1e-3) {
+  // Two conditions, and which way round they go matters. The model may draw
+  // more than the shape shows: Minecraft culls a face against a neighbouring
+  // block, never against another part of the same model, so a stair draws the
+  // whole top of its lower slab even though its step stands on half of it.
+  // Those extra faces are inside the solid and no reason to refuse.
+  //
+  //   - everything the model draws has to lie on a side of some box, or the
+  //     model is not made of these boxes at all;
+  //   - everything the shape shows has to be drawn, or the model is smaller
+  //     than the boxes and printing them would make it bigger than it looks.
+  for (const [key, tiles] of drawn) {
+    const sides = onSides.get(key);
+    if (sides === undefined) {
+      return null;
+    }
+    for (const tile of tiles) {
+      if (area(uncovered(tile, sides)) > SLIVER) {
         return null;
       }
     }
   }
-  return [
-    low[0] as number,
-    low[1] as number,
-    low[2] as number,
-    high[0] as number,
-    high[1] as number,
-    high[2] as number,
-  ];
+  for (const [key, tiles] of outside) {
+    const shown = drawn.get(key) ?? [];
+    for (const tile of tiles) {
+      if (area(uncovered(tile, shown)) > SLIVER) {
+        return null;
+      }
+    }
+  }
+  return shape.map((box) => [...box] as Box);
+}
+
+/**
+ * The solid shape of each palette entry, in block-local coordinates.
+ *
+ * <p>The export carries a block's shape as boxes, and the preview keeps them
+ * past the ones it draws. Recovering them here means the printable side can ask
+ * "is this model just its shape?" without the shapes being passed down again.
+ */
+export function shapesPerEntry(model: VoxelModel): Map<number, Box[]> {
+  const shapes = new Map<number, Box[]>();
+  const { width, depth } = model.size;
+
+  for (let i = model.boxes; i < model.solids; i++) {
+    const entry = model.paletteIndices[i] as number;
+    const block = model.solidBlocks[i] as number;
+    const x = block % width;
+    const y = Math.floor(block / (width * depth));
+    const z = Math.floor(block / width) % depth;
+
+    const cx = model.positions[i * 3] as number;
+    const cy = model.positions[i * 3 + 1] as number;
+    const cz = model.positions[i * 3 + 2] as number;
+    const sx = model.scales[i * 3] as number;
+    const sy = model.scales[i * 3 + 1] as number;
+    const sz = model.scales[i * 3 + 2] as number;
+
+    // Not rounded: these are the same dyadic numbers the model's corners are,
+    // and rounding a sixteenth to a thousandth makes the box a whisker larger
+    // than the faces meant to describe it, which then fail to cover it.
+    const local: Box = [
+      cx - sx / 2 - (x - width / 2),
+      cy - sy / 2 - (y - model.size.height / 2),
+      cz - sz / 2 - (z - depth / 2),
+      cx + sx / 2 - (x - width / 2),
+      cy + sy / 2 - (y - model.size.height / 2),
+      cz + sz / 2 - (z - depth / 2),
+    ];
+    const known = shapes.get(entry);
+    if (known === undefined) {
+      shapes.set(entry, [local]);
+    } else if (!known.some((box) => box.every((value, k) => Math.abs(value - (local[k] as number)) < 1e-6))) {
+      known.push(local);
+    }
+  }
+  return shapes;
 }
 
 /**
@@ -971,4 +1070,13 @@ function mergeBoxes(
     boxes.push([x, y, z, x + width, y + height, z + depth]);
   }
   return boxes;
+}
+
+/** How much a heap of rectangles adds up to, overlaps counted twice. */
+function area(tiles: readonly Tile[]): number {
+  let total = 0;
+  for (const tile of tiles) {
+    total += (tile.u1 - tile.u0) * (tile.v1 - tile.v0);
+  }
+  return total;
 }
