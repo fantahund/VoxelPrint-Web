@@ -243,7 +243,7 @@ export function solidsBySlot(
   }
 
   const wall = Math.max(options.wallMillimetres, TOO_THIN);
-  for (const { slot, corners, normal } of mergeCoplanar([...surface.values()])) {
+  for (const { slot, corners, normal } of mergeCoplanar(hideBackToBack([...surface.values()]))) {
     (grouped[slot] as Solid[]).push(thicken(corners, normal, wall));
   }
   return grouped;
@@ -254,6 +254,8 @@ interface Facet {
   slot: number;
   corners: Point[];
   normal: Point;
+  /** Where the block it came from stands, or "" once faces have been joined. */
+  owner: string;
 }
 
 /** An axis aligned rectangle, in the plane it lies in. */
@@ -262,6 +264,130 @@ interface Tile {
   v0: number;
   u1: number;
   v1: number;
+}
+
+/** A tile that still knows where it came from and which way it looks. */
+interface Placed extends Tile {
+  axis: number;
+  at: number;
+  sign: number;
+  slot: number;
+  owner: string;
+}
+
+/**
+ * Takes away the parts of a face that another face is pressed against.
+ *
+ * <p>The rule further up drops two faces only when they cover each other
+ * exactly. That is most of them, but a floor is full of blocks whose sides do
+ * not match: a dirt path is fifteen sixteenths tall, so the earth beside it
+ * meets it with a taller face than its own, and neither is an exact match for
+ * the other. Both were kept, and both were printed -- inside the floor, where
+ * the slicer then drew a perimeter around each. Measured on a village: a
+ * quarter of all the surface that survived was pressed against another face,
+ * seven hundred and twenty five faces of it hidden completely.
+ *
+ * <p>So the overlap is subtracted rather than the whole face dropped. What is
+ * left of each face is cut along every edge its blockers bring, and the cells
+ * that nothing covers are kept; {@link mergeCoplanar} then joins them back into
+ * as few rectangles as it can.
+ *
+ * <p>Faces of one block never hide each other, which is what keeps a sheet with
+ * no thickness -- a chain, a blade of grass -- from cancelling itself out.
+ */
+function hideBackToBack(faces: readonly Facet[]): Facet[] {
+  const kept: Facet[] = [];
+  const planes = new Map<string, Placed[]>();
+
+  for (const face of faces) {
+    const flat = asTile(face);
+    if (flat === null) {
+      // Not a rectangle in a plane: a tilted face has nothing to be pressed
+      // against squarely, so it is left alone.
+      kept.push(face);
+      continue;
+    }
+    const placed: Placed = {
+      ...flat.tile,
+      axis: flat.axis,
+      at: flat.at,
+      sign: flat.sign,
+      slot: face.slot,
+      owner: face.owner,
+    };
+    const key = `${flat.axis}|${flat.at}`;
+    const plane = planes.get(key);
+    if (plane === undefined) {
+      planes.set(key, [placed]);
+    } else {
+      plane.push(placed);
+    }
+  }
+
+  for (const plane of planes.values()) {
+    for (const tile of plane) {
+      const blockers = plane.filter(
+        (other) =>
+          other.sign !== tile.sign &&
+          other.owner !== tile.owner &&
+          other.u0 < tile.u1 &&
+          other.u1 > tile.u0 &&
+          other.v0 < tile.v1 &&
+          other.v1 > tile.v0,
+      );
+      for (const piece of uncovered(tile, blockers)) {
+        kept.push(facetOf(tile.axis, tile.sign, tile.at, tile.slot, piece));
+      }
+    }
+  }
+  return kept;
+}
+
+/**
+ * What is left of a rectangle once the blockers are taken out of it.
+ *
+ * <p>Cut along every edge the blockers bring and keep the cells none of them
+ * covers. That leaves more pieces than necessary -- a rectangle with a bite out
+ * of one corner comes back as several -- and joining them again is exactly what
+ * the merge afterwards is for.
+ */
+function uncovered(tile: Tile, blockers: readonly Tile[]): Tile[] {
+  if (blockers.length === 0) {
+    return [{ u0: tile.u0, v0: tile.v0, u1: tile.u1, v1: tile.v1 }];
+  }
+
+  const us = cuts(tile.u0, tile.u1, blockers.flatMap((b) => [b.u0, b.u1]));
+  const vs = cuts(tile.v0, tile.v1, blockers.flatMap((b) => [b.v0, b.v1]));
+
+  const pieces: Tile[] = [];
+  for (let i = 0; i + 1 < us.length; i++) {
+    for (let j = 0; j + 1 < vs.length; j++) {
+      const u0 = us[i] as number;
+      const u1 = us[i + 1] as number;
+      const v0 = vs[j] as number;
+      const v1 = vs[j + 1] as number;
+      const midU = (u0 + u1) / 2;
+      const midV = (v0 + v1) / 2;
+      const covered = blockers.some(
+        (b) => b.u0 <= midU && midU <= b.u1 && b.v0 <= midV && midV <= b.v1,
+      );
+      if (!covered) {
+        pieces.push({ u0, v0, u1, v1 });
+      }
+    }
+  }
+  return pieces;
+}
+
+/** The cut lines across one side, the ends included and duplicates gone. */
+function cuts(from: number, to: number, inside: readonly number[]): number[] {
+  const all = new Set<number>([from, to]);
+  for (const value of inside) {
+    if (value > from && value < to) {
+      all.add(value);
+    }
+  }
+  return [...all].sort((a, b) => a - b);
 }
 
 /**
@@ -455,7 +581,7 @@ function facetOf(axis: number, sign: number, at: number, slot: number, tile: Til
   if (made === null || (made[axis] as number) * sign < 0) {
     corners = [...corners].reverse();
   }
-  return { slot, corners, normal };
+  return { slot, corners, normal, owner: "" };
 }
 
 /**
