@@ -1,4 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Badge,
+  Box,
+  Button,
+  Callout,
+  Card,
+  Checkbox,
+  DataList,
+  Flex,
+  Heading,
+  IconButton,
+  Select,
+  Separator,
+  Table,
+  Text,
+  TextField,
+  Theme,
+  Tooltip,
+} from "@radix-ui/themes";
 import { fetchIndices, fetchModels, fetchProject, savePrinting, uploadProject } from "./api";
 import {
   MAX_SLOTS,
@@ -10,8 +29,13 @@ import {
   type FilamentSlot,
 } from "./slots/filament";
 import { derivePalette } from "./slots/palette";
-import { buildThreeMf, type Geometry, type ThreeMfFile } from "./export/threeMf";
+import { apply, describe, invert, removal, type Edit, type EditorState } from "./editor";
+import type { Pick } from "./viewer/Viewer";
+import { buildThreeMf, type ThreeMfFile } from "./export/threeMf";
+import { buildStl, type StlFile } from "./export/stl";
+import type { Geometry } from "./export/geometry";
 import {
+  blockIdOf,
   buildVoxels,
   colourise,
   unpackIndices,
@@ -19,7 +43,7 @@ import {
   type VoxelModel,
 } from "./viewer/buildVoxels";
 import Viewer from "./viewer/Viewer";
-import type { Project } from "./types";
+import type { BlockModels, Project, StructureInfo } from "./types";
 
 const numberFormat = new Intl.NumberFormat();
 
@@ -51,33 +75,39 @@ function SlotCount({
   onCount: (next: number) => void;
 }): React.ReactElement {
   return (
-    <div className="slot-counts">
+    <Flex gap="2" align="center" wrap="wrap">
       {SLOT_COUNTS.map((option) => (
-        <button
+        <Button
           key={option}
-          type="button"
-          className={count === option ? "chip active" : "chip"}
+          size="1"
+          variant={count === option ? "solid" : "soft"}
           onClick={() => onCount(option)}
         >
-          {option} {option === 1 ? "colour" : "colours"}
-        </button>
+          {option}
+        </Button>
       ))}
-      <label className="chip count-input">
-        <input
-          type="number"
-          min={1}
-          max={MAX_SLOTS}
-          value={count}
-          aria-label="How many filaments"
-          onChange={(event) => {
-            const next = Number(event.target.value);
-            if (Number.isFinite(next) && next >= 1) {
-              onCount(Math.min(Math.round(next), MAX_SLOTS));
-            }
-          }}
-        />
-      </label>
-    </div>
+      <TextField.Root
+        size="1"
+        type="number"
+        min={1}
+        max={MAX_SLOTS}
+        value={String(count)}
+        aria-label="How many filaments"
+        style={{ width: "5rem" }}
+        onChange={(event) => {
+          const next = Number(event.target.value);
+          if (Number.isFinite(next) && next >= 1) {
+            onCount(Math.min(Math.round(next), MAX_SLOTS));
+          }
+        }}
+      >
+        <TextField.Slot side="right">
+          <Text size="1" color="gray">
+            slots
+          </Text>
+        </TextField.Slot>
+      </TextField.Root>
+    </Flex>
   );
 }
 
@@ -140,17 +170,50 @@ function Facts({ project }: { project: Project }): React.ReactElement {
   ];
 
   return (
-    <section className="panel">
-      <h2>Project</h2>
-      <dl className="facts">
+    <Panel title="Project">
+      <DataList.Root size="1" orientation="vertical" trim="both">
         {rows.map(([label, value]) => (
-          <div key={label}>
-            <dt>{label}</dt>
-            <dd>{value}</dd>
-          </div>
+          <DataList.Item key={label}>
+            <DataList.Label minWidth="7rem">{label}</DataList.Label>
+            <DataList.Value>
+              <Text size="1" style={{ overflowWrap: "anywhere" }}>
+                {value}
+              </Text>
+            </DataList.Value>
+          </DataList.Item>
         ))}
-      </dl>
-    </section>
+      </DataList.Root>
+    </Panel>
+  );
+}
+
+/**
+ * A titled block in one of the side columns.
+ *
+ * <p>The panels are the same shape throughout, so they are one component rather
+ * than the same three elements written out a dozen times.
+ */
+function Panel({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: React.ReactNode;
+  children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <Box p="3">
+      <Heading size="2" mb={hint === undefined ? "2" : "1"}>
+        {title}
+      </Heading>
+      {hint !== undefined && (
+        <Text as="p" size="1" color="gray" mb="3">
+          {hint}
+        </Text>
+      )}
+      {children}
+    </Box>
   );
 }
 
@@ -176,63 +239,72 @@ function Filaments({
   };
 
   return (
-    <section className="panel">
-      <h2>Filaments</h2>
-      <p className="muted">
-        How many colours the printer can load, and what they look like. Changing a colour updates the
-        preview at once.
-      </p>
+    <Panel
+      title="Filaments"
+      hint="How many colours the printer can load, and what they look like. A change shows in the preview at once."
+    >
+      <Flex direction="column" gap="3">
+        <SlotCount count={count} onCount={onCount} />
 
-      <SlotCount count={count} onCount={onCount} />
+        <Flex gap="2" wrap="wrap">
+          <Tooltip content="Work out the best colours for this build">
+            <Button
+              size="1"
+              variant={source === "build" ? "solid" : "soft"}
+              onClick={() => onSource("build")}
+            >
+              From the build
+            </Button>
+          </Tooltip>
+          <Tooltip content="The same set every time, for spools you already own">
+            <Button
+              size="1"
+              variant={source === "standard" ? "solid" : "soft"}
+              onClick={() => onSource("standard")}
+            >
+              Standard set
+            </Button>
+          </Tooltip>
+          <Button size="1" variant="outline" onClick={onReassign}>
+            Re-assign
+          </Button>
+        </Flex>
 
-      <div className="slot-counts">
-        <button
-          type="button"
-          className={source === "build" ? "chip active" : "chip"}
-          onClick={() => onSource("build")}
-          title="Work out the best colours for this build"
-        >
-          Colours from the build
-        </button>
-        <button
-          type="button"
-          className={source === "standard" ? "chip active" : "chip"}
-          onClick={() => onSource("standard")}
-          title="The same set every time, for spools you already own"
-        >
-          Standard set
-        </button>
-        <button type="button" className="chip" onClick={onReassign}>
-          Re-assign by colour
-        </button>
-      </div>
+        {slots.length < count && (
+          <Callout.Root size="1" color="amber">
+            <Callout.Text>
+              This build has only {slots.length} distinct{" "}
+              {slots.length === 1 ? "colour" : "colours"} worth a filament of its own, so{" "}
+              {count - slots.length} would stay unused.
+            </Callout.Text>
+          </Callout.Root>
+        )}
 
-      {slots.length < count && (
-        <p className="muted">
-          This build has only {slots.length} distinct {slots.length === 1 ? "colour" : "colours"} worth
-          giving a filament of its own, so {count - slots.length} would stay unused.
-        </p>
-      )}
-
-      <ul className="slots">
-        {slots.map((slot, index) => (
-          <li key={index}>
-            <input
-              type="color"
-              value={toHex(slot.colour)}
-              aria-label={`Colour of ${slot.name}`}
-              onChange={(event) => change(index, { colour: fromHex(event.target.value) })}
-            />
-            <input
-              type="text"
-              value={slot.name}
-              aria-label={`Name of filament ${index + 1}`}
-              onChange={(event) => change(index, { name: event.target.value })}
-            />
-          </li>
-        ))}
-      </ul>
-    </section>
+        <Flex direction="column" gap="2">
+          {slots.map((slot, index) => (
+            <Flex key={index} gap="2" align="center">
+              <Text size="1" color="gray" style={{ width: "1.25rem", textAlign: "right" }}>
+                {index + 1}
+              </Text>
+              <input
+                type="color"
+                className="colour-input"
+                value={toHex(slot.colour)}
+                aria-label={`Colour of ${slot.name}`}
+                onChange={(event) => change(index, { colour: fromHex(event.target.value) })}
+              />
+              <TextField.Root
+                size="1"
+                style={{ flex: 1, minWidth: 0 }}
+                value={slot.name}
+                aria-label={`Name of filament ${index + 1}`}
+                onChange={(event) => change(index, { name: event.target.value })}
+              />
+            </Flex>
+          ))}
+        </Flex>
+      </Flex>
+    </Panel>
   );
 }
 
@@ -248,70 +320,99 @@ function Mapping({
   onAssign: (blockId: string, slot: number) => void;
 }): React.ReactElement {
   return (
-    <section className="panel">
-      <h2>Blocks to filaments</h2>
-      <p className="muted">
-        {numberFormat.format(model.typeCounts.length)} block types, most common first. Every block of a
-        type prints in the same colour.{" "}
-        {model.modelled
-          ? "The in-game colour is measured from the textures the export carries."
-          : "The in-game colour is this site's guess; export again with models to measure it."}
-      </p>
-      <table className="blocks">
-        <thead>
-          <tr>
-            <th>Blocks</th>
-            <th>Type</th>
-            <th>In game</th>
-            <th>Filament</th>
-          </tr>
-        </thead>
-        <tbody>
+    <Panel
+      title="Blocks to filaments"
+      hint={
+        <>
+          {numberFormat.format(model.typeCounts.length)} block types, most common first.{" "}
+          {model.modelled
+            ? "In-game colours are measured from the textures the export carries."
+            : "In-game colours are guessed; export again with models to measure them."}
+        </>
+      }
+    >
+      <Table.Root size="1" variant="surface" className="sticky-head">
+        <Table.Header>
+          <Table.Row>
+            <Table.ColumnHeaderCell>Type</Table.ColumnHeaderCell>
+            <Table.ColumnHeaderCell align="right">Blocks</Table.ColumnHeaderCell>
+            <Table.ColumnHeaderCell>Filament</Table.ColumnHeaderCell>
+          </Table.Row>
+        </Table.Header>
+        <Table.Body>
           {model.typeCounts.map(([id, count]) => {
             const slotIndex = assignment[id] ?? 0;
             const slot = slots[slotIndex];
             const inGame = model.blockTypeColours[id] ?? 0x9a9a9a;
             return (
-              <tr key={id}>
-                <td className="count">{numberFormat.format(count)}</td>
-                <td className="state">{id}</td>
-                <td>
-                  <span
-                    className="swatch"
-                    style={{ background: toHex(inGame) }}
-                    title={toHex(inGame)}
-                    aria-label={`${id} looks like ${toHex(inGame)}`}
-                  />
-                </td>
-                <td className="assign">
-                  <span
-                    className="swatch"
-                    style={{ background: toHex(slot?.colour ?? 0x9a9a9a) }}
-                    aria-hidden="true"
-                  />
-                  <select
-                    value={slotIndex}
-                    aria-label={`Filament for ${id}`}
-                    onChange={(event) => onAssign(id, Number(event.target.value))}
-                  >
-                    {slots.map((option, index) => (
-                      <option key={index} value={index}>
-                        {option.name}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-              </tr>
+              <Table.Row key={id}>
+                <Table.Cell>
+                  <Flex gap="2" align="center">
+                    <span
+                      className="swatch"
+                      style={{ background: toHex(inGame) }}
+                      title={`In game: ${toHex(inGame)}`}
+                    />
+                    <Text size="1" style={{ overflowWrap: "anywhere" }}>
+                      {id.replace(/^minecraft:/, "")}
+                    </Text>
+                  </Flex>
+                </Table.Cell>
+                <Table.Cell align="right">
+                  <Text size="1" color="gray">
+                    {numberFormat.format(count)}
+                  </Text>
+                </Table.Cell>
+                <Table.Cell>
+                  <Flex gap="2" align="center">
+                    <span
+                      className="swatch"
+                      style={{ background: toHex(slot?.colour ?? 0x9a9a9a) }}
+                      aria-hidden="true"
+                    />
+                    <Select.Root
+                      size="1"
+                      value={String(slotIndex)}
+                      onValueChange={(value) => onAssign(id, Number(value))}
+                    >
+                      <Select.Trigger variant="ghost" aria-label={`Filament for ${id}`} />
+                      <Select.Content>
+                        {slots.map((option, index) => (
+                          <Select.Item key={index} value={String(index)}>
+                            {option.name || `Filament ${index + 1}`}
+                          </Select.Item>
+                        ))}
+                      </Select.Content>
+                    </Select.Root>
+                  </Flex>
+                </Table.Cell>
+              </Table.Row>
             );
           })}
-        </tbody>
-      </table>
-    </section>
+        </Table.Body>
+      </Table.Root>
+    </Panel>
   );
 }
 
+/** Which of the two files is being written. Also the extension. */
+type Kind = "3mf" | "stl";
+
+const MEDIA_TYPES: Readonly<Record<Kind, string>> = {
+  "3mf": "model/3mf",
+  stl: "model/stl",
+};
+
 /**
- * Writes the build out as a 3MF file.
+ * Whichever file was built last, and which kind it was.
+ *
+ * <p>An STL has no parts, so it counts as one: the summary then reads the same
+ * way for both without the two needing separate wording.
+ */
+type Built = (ThreeMfFile | StlFile) & { readonly kind: Kind; readonly parts: number };
+
+/**
+ * Writes the build out as a 3MF or an STL file.
  *
  * <p>Built when asked rather than as the plan changes: a large build is a lot
  * of triangles, and nobody wants that work done on every nudge of a colour
@@ -336,11 +437,23 @@ function Download({
   const [millimetres, setMillimetres] = useState(10);
   const [geometry, setGeometry] = useState<Geometry>("shell");
   const [wall, setWall] = useState(1.2);
-  const [file, setFile] = useState<ThreeMfFile | null>(null);
+  /**
+   * Whether the 3MF brings the palette along; see ThreeMfOptions.carryColours.
+   *
+   * <p>On by default, chosen deliberately: a build that opens in the colours it
+   * was planned in is what somebody expects, and the cost -- a slicer that may
+   * build project filaments of its own -- is visible and undoable by unticking
+   * the box.
+   */
+  const [carryColours, setCarryColours] = useState(true);
+  const [file, setFile] = useState<Built | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
 
   // A fresh plan or a different setting makes whatever was built stale.
-  useEffect(() => setFile(null), [model, slots, assignment, millimetres, geometry, wall]);
+  useEffect(
+    () => setFile(null),
+    [model, slots, assignment, millimetres, geometry, wall, carryColours],
+  );
 
   const printed = [
     model.size.width * millimetres,
@@ -348,22 +461,27 @@ function Download({
     model.size.height * millimetres,
   ];
 
-  const save = (): void => {
+  const save = (kind: Kind): void => {
     setFailure(null);
     try {
-      const built = buildThreeMf(model, slots, assignment, {
+      const options = {
         millimetresPerBlock: millimetres,
         geometry,
         wallMillimetres: wall,
         name,
-      });
+        carryColours,
+      };
+      const built: Built =
+        kind === "3mf"
+          ? { kind, ...buildThreeMf(model, slots, assignment, options) }
+          : { kind, parts: 1, ...buildStl(model, slots, assignment, options) };
       setFile(built);
 
-      const blob = new Blob([built.bytes as BlobPart], { type: "model/3mf" });
+      const blob = new Blob([built.bytes as BlobPart], { type: MEDIA_TYPES[kind] });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `${name}.3mf`;
+      link.download = `${name}.${kind}`;
       link.click();
       // Freed on the next turn of the loop, once the browser has taken it.
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
@@ -373,105 +491,273 @@ function Download({
   };
 
   return (
-    <section className="panel">
-      <h2>Print it</h2>
-      <p className="muted">
-        A 3MF file holding one part per filament, which any slicer can open and give an extruder to.
-      </p>
+    <Panel
+      title="Print it"
+      hint="A 3MF holds one part per filament, which any slicer can give an extruder to. An STL holds the same shape as one body."
+    >
+      <Flex direction="column" gap="3">
+        <Box>
+          <Text as="div" size="1" weight="medium" mb="1">
+            Geometry
+          </Text>
+          <Flex gap="2" wrap="wrap">
+            <Tooltip content="Follow the models, as the preview draws them">
+              <Button
+                size="1"
+                variant={geometry === "shell" ? "solid" : "soft"}
+                onClick={() => setGeometry("shell")}
+              >
+                Detailed shell
+              </Button>
+            </Tooltip>
+            <Tooltip content="One closed box per part of each block's shape">
+              <Button
+                size="1"
+                variant={geometry === "solid" ? "solid" : "soft"}
+                onClick={() => setGeometry("solid")}
+              >
+                Solid shapes
+              </Button>
+            </Tooltip>
+          </Flex>
+          <Text as="p" size="1" color="gray" mt="1">
+            {geometry === "shell"
+              ? "Every face given a wall, so a torch is a torch. Hollow, so thin parts are fragile."
+              : "One closed box per part of a block's shape. Sturdy and much smaller, but a tilted torch comes out upright."}
+          </Text>
+        </Box>
 
-      <div className="slot-counts">
-        <button
-          type="button"
-          className={geometry === "shell" ? "chip active" : "chip"}
-          onClick={() => setGeometry("shell")}
-          title="Follow the models, as the preview draws them"
-        >
-          Detailed shell
-        </button>
-        <button
-          type="button"
-          className={geometry === "solid" ? "chip active" : "chip"}
-          onClick={() => setGeometry("solid")}
-          title="One closed box per part of each block's shape"
-        >
-          Solid shapes
-        </button>
-        {geometry === "shell" && (
-          <label className="chip count-input measure">
-            <input
+        <Flex gap="3" wrap="wrap">
+          <Box style={{ flex: 1, minWidth: "7rem" }}>
+            <Text as="div" size="1" weight="medium" mb="1">
+              Block size
+            </Text>
+            <TextField.Root
+              size="1"
               type="number"
-              min={0.2}
-              max={10}
-              step={0.2}
-              value={wall}
-              aria-label="Wall thickness in millimetres"
+              min={1}
+              max={200}
+              value={String(millimetres)}
+              aria-label="Millimetres per block"
               onChange={(event) => {
                 const next = Number(event.target.value);
-                if (Number.isFinite(next) && next >= 0.2) {
-                  setWall(Math.min(next, 10));
+                if (Number.isFinite(next) && next >= 1) {
+                  setMillimetres(Math.min(Math.round(next), 200));
                 }
               }}
-            />
-            <span>mm wall</span>
-          </label>
-        )}
-      </div>
+            >
+              <TextField.Slot side="right">
+                <Text size="1" color="gray">
+                  mm
+                </Text>
+              </TextField.Slot>
+            </TextField.Root>
+          </Box>
 
-      <p className="muted">
-        {geometry === "shell" ? (
-          <>
-            The models, each face given a wall to print out of, so a torch is a torch. Hollow, so
-            thin parts are fragile and there is a great deal more of it.
-          </>
-        ) : (
-          <>
-            One closed box per part of each block&rsquo;s shape. Sturdy and much smaller, but a
-            tilted torch comes out as an upright stub.
-          </>
-        )}
-      </p>
+          {geometry === "shell" && (
+            <Box style={{ flex: 1, minWidth: "7rem" }}>
+              <Text as="div" size="1" weight="medium" mb="1">
+                Wall
+              </Text>
+              <TextField.Root
+                size="1"
+                type="number"
+                min={0.2}
+                max={10}
+                step={0.2}
+                value={String(wall)}
+                aria-label="Wall thickness in millimetres"
+                onChange={(event) => {
+                  const next = Number(event.target.value);
+                  if (Number.isFinite(next) && next >= 0.2) {
+                    setWall(Math.min(next, 10));
+                  }
+                }}
+              >
+                <TextField.Slot side="right">
+                  <Text size="1" color="gray">
+                    mm
+                  </Text>
+                </TextField.Slot>
+              </TextField.Root>
+            </Box>
+          )}
+        </Flex>
 
-      <div className="slot-counts">
-        <label className="chip count-input measure">
-          <input
-            type="number"
-            min={1}
-            max={200}
-            step={1}
-            value={millimetres}
-            aria-label="Millimetres per block"
-            onChange={(event) => {
-              const next = Number(event.target.value);
-              if (Number.isFinite(next) && next >= 1) {
-                setMillimetres(Math.min(Math.round(next), 200));
-              }
-            }}
-          />
-          <span>mm per block</span>
-        </label>
-        <button type="button" className="chip" onClick={save}>
-          Download .3mf
-        </button>
-      </div>
+        <Box>
+          <Text as="label" size="1">
+            <Flex gap="2" align="center">
+              <Checkbox
+                checked={carryColours}
+                onCheckedChange={(next) => setCarryColours(next === true)}
+              />
+              Carry colours
+            </Flex>
+          </Text>
+          <Text as="p" size="1" color="gray" mt="1">
+            {carryColours
+              ? "The 3MF brings the palette with it, so the build opens in the colours it was planned in. A slicer that finds a filament set in a file may push aside the profiles set up there; untick this if yours does."
+              : "Each part names only the slot it prints in, and the printer decides what colour is loaded there."}
+          </Text>
+        </Box>
 
-      <p className="muted">
-        {/* Before building, the size is what the blocks come to; afterwards it
-            is what the file actually measures, which a shell overruns by half a
-            wall on each side. */}
-        {file === null ? (
-          <>
-            {printed[0]} × {printed[1]} × {printed[2]} mm. Built when you ask for it.
-          </>
-        ) : (
-          <>
-            {file.size[0]} × {file.size[1]} × {file.size[2]} mm.{" "}
-            {numberFormat.format(file.triangles)} triangles across {file.parts}{" "}
-            {file.parts === 1 ? "part" : "parts"}, {bytes(file.bytes.length)}.
-          </>
+        <Separator size="4" />
+
+        <Flex gap="2">
+          <Button style={{ flex: 1 }} onClick={() => save("3mf")}>
+            Download .3mf
+          </Button>
+          <Button style={{ flex: 1 }} variant="soft" onClick={() => save("stl")}>
+            .stl
+          </Button>
+        </Flex>
+
+        <Text as="p" size="1" color="gray">
+          {file === null ? (
+            <>
+              {printed[0]} × {printed[1]} × {printed[2]} mm, built when you ask for it.
+            </>
+          ) : (
+            <>
+              {file.size[0]} × {file.size[1]} × {file.size[2]} mm.{" "}
+              {numberFormat.format(file.triangles)} triangles
+              {file.kind === "3mf" ? (
+                <>
+                  {" "}
+                  across {file.parts} {file.parts === 1 ? "part" : "parts"}
+                </>
+              ) : (
+                <> in one body</>
+              )}
+              , {bytes(file.bytes.length)} of .{file.kind}.
+            </>
+          )}
+        </Text>
+
+        {failure !== null && (
+          <Callout.Root size="1" color="red">
+            <Callout.Text>{failure}</Callout.Text>
+          </Callout.Root>
         )}
-      </p>
-      {failure !== null && <p className="error">{failure}</p>}
-    </section>
+      </Flex>
+    </Panel>
+  );
+}
+
+/**
+ * The menu a right click in the preview opens.
+ *
+ * <p>Fixed to the pointer rather than placed in the layout, and nudged back
+ * inside the window when it would hang off the edge -- a menu opened near the
+ * bottom of a tall build is otherwise half unreachable.
+ *
+ * <p>Everything here acts on what was clicked: the block itself, or every block
+ * of its type. Both are offered because both are wanted. Clearing away one
+ * torch that spoils a silhouette is one job; clearing away all the grass before
+ * printing is another, and doing it a block at a time is not a job at all.
+ */
+function BlockMenu({
+  at,
+  state,
+  count,
+  gone,
+  slots,
+  slot,
+  onRemove,
+  onRemoveType,
+  onRestoreType,
+  onAssign,
+  onClose,
+}: {
+  at: { x: number; y: number };
+  state: string;
+  count: number;
+  gone: number;
+  slots: readonly FilamentSlot[];
+  slot: number;
+  onRemove: () => void;
+  onRemoveType: () => void;
+  onRestoreType: () => void;
+  onAssign: (slot: number) => void;
+  onClose: () => void;
+}): React.ReactElement {
+  const id = blockIdOf(state);
+  const properties = state.slice(id.length);
+
+  return (
+    <Box
+      className="block-menu"
+      style={{
+        left: Math.min(at.x, Math.max(0, window.innerWidth - 290)),
+        top: Math.min(at.y, Math.max(0, window.innerHeight - 280)),
+      }}
+      // The window closes this on any pointer press; inside it, a press is
+      // meant for the menu.
+      onPointerDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+      role="menu"
+    >
+      <Card size="2">
+        <Flex direction="column" gap="2">
+          <Box>
+            <Text as="div" size="2" weight="bold" style={{ overflowWrap: "anywhere" }}>
+              {id.replace(/^minecraft:/, "")}
+            </Text>
+            {properties !== "" && (
+              <Text as="div" size="1" color="gray" style={{ overflowWrap: "anywhere" }}>
+                {properties}
+              </Text>
+            )}
+          </Box>
+
+          <Flex gap="2" align="center">
+            <Badge size="1" color="gray">
+              {numberFormat.format(count)} in the build
+            </Badge>
+            {gone > 0 && (
+              <Badge size="1" color="amber">
+                {numberFormat.format(gone)} removed
+              </Badge>
+            )}
+          </Flex>
+
+          <Separator size="4" />
+
+          <Flex gap="2" align="center" justify="between">
+            <Text size="1">Filament</Text>
+            <Select.Root
+              size="1"
+              value={String(slot)}
+              onValueChange={(value) => {
+                onAssign(Number(value));
+                onClose();
+              }}
+            >
+              <Select.Trigger style={{ flex: 1, minWidth: 0 }} />
+              <Select.Content>
+                {slots.map((option, index) => (
+                  <Select.Item key={index} value={String(index)}>
+                    {option.name || `Filament ${index + 1}`}
+                  </Select.Item>
+                ))}
+              </Select.Content>
+            </Select.Root>
+          </Flex>
+
+          <Button size="1" variant="soft" color="red" onClick={onRemove}>
+            Remove this block
+          </Button>
+          <Button size="1" variant="soft" color="red" onClick={onRemoveType}>
+            Remove all {numberFormat.format(count)}
+          </Button>
+          {gone > 0 && (
+            <Button size="1" variant="soft" onClick={onRestoreType}>
+              Put back {numberFormat.format(gone)}
+            </Button>
+          )}
+        </Flex>
+      </Card>
+    </Box>
   );
 }
 
@@ -498,7 +784,37 @@ export default function App(): React.ReactElement {
     source: "build",
   });
   const [assignment, setAssignment] = useState<Readonly<Record<string, number>>>({});
+  /** Blocks taken out by hand, as indices into the selection. */
+  const [removed, setRemoved] = useState<ReadonlySet<number>>(() => new Set<number>());
+  /** What has been done and what has been taken back, newest last. */
+  const [done, setDone] = useState<readonly Edit[]>([]);
+  const [undone, setUndone] = useState<readonly Edit[]>([]);
+  const [menu, setMenu] = useState<Pick | null>(null);
+  /**
+   * What the model was built from, so it can be built again.
+   *
+   * <p>Removing a block is not a matter of hiding an instance: the block that
+   * was behind it now has a face to show, and the exporter wants the same model
+   * the preview does. Rebuilding from the source is the one way to keep all
+   * three honest.
+   */
+  const sourceRef = useRef<{
+    structure: StructureInfo;
+    indices: Uint32Array;
+    models: BlockModels | null;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Light or dark, starting from what the system asks for.
+   *
+   * <p>Read once rather than followed: somebody who has clicked the switch
+   * means it, and a system that changes at dusk should not overrule them.
+   */
+  const [appearance, setAppearance] = useState<"light" | "dark">(() =>
+    typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light",
+  );
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   /** Guards the save effect until the first plan is in place. */
@@ -584,10 +900,22 @@ export default function App(): React.ReactElement {
         if (cancelled) {
           return;
         }
-        const built = buildVoxels(structure, unpackIndices(raw, structure.bytesPerIndex), models);
-        setModel(built);
+        const unpacked = unpackIndices(raw, structure.bytesPerIndex);
+        sourceRef.current = { structure, indices: unpacked, models };
 
         const saved = project.printing;
+        // A plan's removals belong to the build it was written for, and the
+        // indices only mean anything within that selection's size.
+        const taken = new Set<number>(
+          (saved?.removed ?? []).filter((block) => block >= 0 && block < unpacked.length),
+        );
+        setRemoved(taken);
+        setDone([]);
+        setUndone([]);
+        setMenu(null);
+
+        const built = buildVoxels(structure, unpacked, models, taken);
+        setModel(built);
         if (saved != null && saved.slots.length > 0) {
           // A saved plan wins, but only for what it actually covers. A plan
           // that names fewer block types than the build has -- because it was
@@ -631,14 +959,150 @@ export default function App(): React.ReactElement {
       return;
     }
     const timer = window.setTimeout(() => {
-      void savePrinting(project.id, { slots: [...slots], assignment: { ...assignment } })
+      void savePrinting(project.id, {
+        slots: [...slots],
+        assignment: { ...assignment },
+        removed: [...removed],
+      })
         .then(() => setSaveError(null))
         .catch((cause: unknown) =>
           setSaveError(cause instanceof Error ? cause.message : "The plan could not be saved."),
         );
     }, 600);
     return () => window.clearTimeout(timer);
-  }, [project, slots, assignment, loadedPlan]);
+  }, [project, slots, assignment, removed, loadedPlan]);
+
+  /**
+   * Carries out an edit and rebuilds what depends on it.
+   *
+   * @param record whether to put it on the undo stack, which undo itself does
+   *               not, having its own
+   */
+  const run = useCallback(
+    (edit: Edit, record: boolean): boolean => {
+      const before: EditorState = { removed, assignment };
+      const after = apply(before, edit);
+      if (after === before) {
+        // Nothing to do: a block already gone, or the filament it is already
+        // in. Recording it would put a step on the stack that undoes nothing.
+        return false;
+      }
+
+      if (after.removed !== before.removed) {
+        setRemoved(after.removed);
+        const source = sourceRef.current;
+        if (source !== null) {
+          setModel(buildVoxels(source.structure, source.indices, source.models, after.removed));
+        }
+      }
+      if (after.assignment !== before.assignment) {
+        setAssignment(after.assignment);
+      }
+      if (record) {
+        setDone((current) => [...current, edit]);
+        setUndone([]);
+      }
+      return true;
+    },
+    [removed, assignment],
+  );
+
+  const undo = useCallback(() => {
+    const last = done[done.length - 1];
+    if (last === undefined) {
+      return;
+    }
+    run(invert(last), false);
+    setDone((current) => current.slice(0, -1));
+    setUndone((current) => [...current, last]);
+  }, [done, run]);
+
+  const redo = useCallback(() => {
+    const next = undone[undone.length - 1];
+    if (next === undefined) {
+      return;
+    }
+    run(next, false);
+    setUndone((current) => current.slice(0, -1));
+    setDone((current) => [...current, next]);
+  }, [undone, run]);
+
+  /**
+   * Ctrl+Z and Ctrl+Y, and Cmd on a Mac.
+   *
+   * <p>Ignored while a field has the focus, so undo inside a filament's name
+   * box still means what the browser means by it.
+   */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (!event.ctrlKey && !event.metaKey) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      if (key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        undo();
+      } else if (key === "y" || (key === "z" && event.shiftKey)) {
+        event.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
+
+  /** Closes the menu on anything that is not the menu itself. */
+  useEffect(() => {
+    if (menu === null) {
+      return;
+    }
+    const close = (): void => setMenu(null);
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        setMenu(null);
+      }
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("wheel", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("wheel", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu]);
+
+  /**
+   * Every block of one palette entry, whether it is still there or not.
+   *
+   * <p>Walks the selection rather than the model, because the model no longer
+   * holds what has been removed, and "put them back" has to find them.
+   */
+  const blocksOfType = useCallback((blockId: string): number[] => {
+    const source = sourceRef.current;
+    if (source === null) {
+      return [];
+    }
+    const { indices, structure } = source;
+    const wanted = new Set<number>();
+    structure.palette.forEach((state, index) => {
+      if (blockIdOf(state) === blockId) {
+        wanted.add(index);
+      }
+    });
+    const found: number[] = [];
+    for (let i = 0; i < indices.length; i++) {
+      if (wanted.has(indices[i] as number)) {
+        found.push(i);
+      }
+    }
+    return found;
+  }, []);
 
   const reassign = useCallback(() => {
     if (model !== null) {
@@ -687,139 +1151,323 @@ export default function App(): React.ReactElement {
   }, [model, slots, assignment, colourMode]);
 
   return (
-    <main>
-      <header>
-        <h1>VoxelPrint</h1>
-        <p className="muted">Turn a Minecraft build into something a 3D printer understands.</p>
-      </header>
+    <Theme
+      appearance={appearance}
+      accentColor="teal"
+      grayColor="slate"
+      radius="medium"
+      scaling="95%"
+    >
+      <Flex direction="column" className="shell">
+        <Flex
+          align="center"
+          justify="between"
+          gap="3"
+          px="3"
+          py="2"
+          style={{ borderBottom: "1px solid var(--gray-a5)" }}
+        >
+          <Flex align="center" gap="3" style={{ minWidth: 0 }}>
+            <Heading size="3">VoxelPrint</Heading>
+            {project !== null && (
+              <Text size="1" color="gray" truncate>
+                {project.fileName}
+              </Text>
+            )}
+            {model !== null && removed.size > 0 && (
+              <Badge size="1" color="amber">
+                {numberFormat.format(removed.size)} removed
+              </Badge>
+            )}
+          </Flex>
 
-      <section className="panel upload">
-        <h2>How many colours can the printer load?</h2>
-        <p className="muted">
-          Decided before the upload, because the whole palette is worked out from it. Changeable
-          afterwards.
-        </p>
-        <SlotCount count={slotCount} onCount={(next) => repalette(next, paletteSource)} />
-      </section>
-
-      <label
-        className={dragging ? "drop dragging" : "drop"}
-        onDragOver={(event) => {
-          event.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(event) => {
-          event.preventDefault();
-          setDragging(false);
-          void accept(event.dataTransfer.files[0]);
-        }}
-      >
-        <input
-          type="file"
-          accept=".mcprint"
-          disabled={busy}
-          onChange={(event) => void accept(event.target.files?.[0])}
-        />
-        <span>{busy ? "Reading …" : "Drop a .mcprint file here, or choose one"}</span>
-      </label>
-
-      {error !== null && <p className="error">{error}</p>}
-
-      {project !== null && (
-        <>
-          <section className="panel">
-            <h2>Preview</h2>
-            {model === null ? (
-              <p className="muted">Building the preview …</p>
-            ) : (
+          <Flex align="center" gap="2">
+            {model !== null && (
               <>
-                <div className="slot-counts">
-                  <button
-                    type="button"
-                    className={colourMode === "filament" ? "chip active" : "chip"}
-                    onClick={() => setColourMode("filament")}
-                  >
-                    Filament colours
-                  </button>
-                  <button
-                    type="button"
-                    className={colourMode === "minecraft" ? "chip active" : "chip"}
-                    onClick={() => setColourMode("minecraft")}
-                    disabled={!model.modelled}
-                    title={
-                      model.modelled
-                        ? "What the build looks like in the game"
-                        : "This export carries no textures to take colours from"
-                    }
-                  >
-                    Minecraft colours
-                  </button>
-                </div>
-                <Viewer model={model} colours={colours} />
-                <p className="muted preview-note">
-                  {numberFormat.format(model.visible)} of {numberFormat.format(model.solid)} solid blocks
-                  are drawn; the rest are fully enclosed and can never be seen.{" "}
-                  {model.modelled ? (
-                    <>
-                      Drawn from the real models the export carries, {numberFormat.format(model.quads)}{" "}
-                      faces in all, so a torch is a torch.{" "}
-                      {model.boxes > 0 && (
-                        <>
-                          {numberFormat.format(model.boxes)} boxes stand in for blocks the game draws
-                          itself, such as chests and signs.
-                        </>
-                      )}
-                    </>
-                  ) : model.shaped ? (
-                    <>
-                      Drawn as {numberFormat.format(model.boxes)} boxes, using the shapes the export
-                      carries, so a stair is a stair. Export again with block models switched on to see
-                      the real shapes.
-                    </>
-                  ) : (
-                    <>
-                      This export carries no block shapes, so every block is drawn as a full cube.
-                      Export again with a newer VoxelPrint to see real shapes.
-                    </>
-                  )}
-                </p>
+                <Tooltip
+                  content={
+                    done.length === 0
+                      ? "Nothing to undo"
+                      : `Undo ${describe(done[done.length - 1] as Edit)}`
+                  }
+                >
+                  <Button size="1" variant="soft" onClick={undo} disabled={done.length === 0}>
+                    Undo
+                  </Button>
+                </Tooltip>
+                <Tooltip
+                  content={
+                    undone.length === 0
+                      ? "Nothing to redo"
+                      : `Redo ${describe(undone[undone.length - 1] as Edit)}`
+                  }
+                >
+                  <Button size="1" variant="soft" onClick={redo} disabled={undone.length === 0}>
+                    Redo
+                  </Button>
+                </Tooltip>
+                <Separator orientation="vertical" size="1" />
               </>
             )}
-          </section>
+            {project !== null && (
+              <Button size="1" variant="outline" onClick={() => setProject(null)}>
+                Open another
+              </Button>
+            )}
+            <Tooltip content={appearance === "dark" ? "Light" : "Dark"}>
+              <IconButton
+                size="1"
+                variant="ghost"
+                aria-label="Light or dark"
+                onClick={() => setAppearance(appearance === "dark" ? "light" : "dark")}
+              >
+                {appearance === "dark" ? "\u2600" : "\u263E"}
+              </IconButton>
+            </Tooltip>
+          </Flex>
+        </Flex>
 
-          {model !== null && (
-            <>
-              <Filaments
-                slots={slots}
-                onSlots={setSlots}
-                count={slotCount}
-                onCount={(next) => repalette(next, paletteSource)}
-                source={paletteSource}
-                onSource={(next) => repalette(slotCount, next)}
-                onReassign={reassign}
-              />
-              {saveError !== null && <p className="error">{saveError}</p>}
-              <Mapping
-                model={model}
-                slots={slots}
-                assignment={assignment}
-                onAssign={(blockId, slot) =>
-                  setAssignment((current) => ({ ...current, [blockId]: slot }))
+        {project === null ? (
+          <Box className="dropzone">
+            <Flex direction="column" align="center" gap="4" style={{ width: "min(34rem, 100%)" }}>
+              <Box>
+                <Heading size="6" mb="1">
+                  Turn a Minecraft build into something a printer understands
+                </Heading>
+                <Text as="p" size="2" color="gray">
+                  Drop the <code>.mcprint</code> your VoxelPrint mod exported.
+                </Text>
+              </Box>
+
+              <Card size="2" style={{ width: "100%" }}>
+                <Flex direction="column" gap="2">
+                  <Text as="div" size="1" weight="medium">
+                    How many colours can the printer load?
+                  </Text>
+                  <SlotCount count={slotCount} onCount={(next) => repalette(next, paletteSource)} />
+                  <Text as="p" size="1" color="gray">
+                    Decided first, because the palette is worked out from it. Changeable afterwards.
+                  </Text>
+                </Flex>
+              </Card>
+
+              <label
+                className={dragging ? "target dragging" : "target"}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  setDragging(true);
+                }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  setDragging(false);
+                  void accept(event.dataTransfer.files[0]);
+                }}
+              >
+                <input
+                  type="file"
+                  accept=".mcprint"
+                  disabled={busy}
+                  onChange={(event) => void accept(event.target.files?.[0])}
+                />
+                <Text size="2" color={dragging ? undefined : "gray"}>
+                  {busy ? "Reading \u2026" : "Drop a .mcprint here, or click to choose one"}
+                </Text>
+              </label>
+
+              {error !== null && (
+                <Callout.Root size="1" color="red" style={{ width: "100%" }}>
+                  <Callout.Text>{error}</Callout.Text>
+                </Callout.Root>
+              )}
+            </Flex>
+          </Box>
+        ) : (
+          <Box className="workspace">
+            <Box className="side">
+              {model !== null && (
+                <>
+                  <Filaments
+                    slots={slots}
+                    onSlots={setSlots}
+                    count={slotCount}
+                    onCount={(next) => repalette(next, paletteSource)}
+                    source={paletteSource}
+                    onSource={(next) => repalette(slotCount, next)}
+                    onReassign={reassign}
+                  />
+                  <Separator size="4" />
+                  <Mapping
+                    model={model}
+                    slots={slots}
+                    assignment={assignment}
+                    onAssign={(blockId, slot) =>
+                      run(
+                        {
+                          kind: "assign",
+                          blockId,
+                          from: assignment[blockId] ?? 0,
+                          to: slot,
+                          what: blockId.replace(/^minecraft:/, ""),
+                        },
+                        true,
+                      )
+                    }
+                  />
+                </>
+              )}
+            </Box>
+
+            <Box className="stage">
+              {model === null ? (
+                <Flex align="center" justify="center" height="100%">
+                  <Text size="2" color="gray">
+                    Building the preview \u2026
+                  </Text>
+                </Flex>
+              ) : (
+                <>
+                  <Viewer model={model} colours={colours} onPick={setMenu} frame={project.id} />
+
+                  <Box className="overlay top-left">
+                    <Card size="1">
+                      <Flex gap="2" align="center">
+                        <Button
+                          size="1"
+                          variant={colourMode === "filament" ? "solid" : "soft"}
+                          onClick={() => setColourMode("filament")}
+                        >
+                          Filament
+                        </Button>
+                        <Tooltip
+                          content={
+                            model.modelled
+                              ? "What the build looks like in the game"
+                              : "This export carries no textures to take colours from"
+                          }
+                        >
+                          <Button
+                            size="1"
+                            variant={colourMode === "minecraft" ? "solid" : "soft"}
+                            onClick={() => setColourMode("minecraft")}
+                            disabled={!model.modelled}
+                          >
+                            Minecraft
+                          </Button>
+                        </Tooltip>
+                      </Flex>
+                    </Card>
+                  </Box>
+
+                  <Box className="overlay bottom">
+                    <Card size="1">
+                      <Flex gap="3" align="center" wrap="wrap">
+                        <Text size="1" color="gray">
+                          Right click a block to remove it or change its filament. Drag to turn.
+                        </Text>
+                        {removed.size > 0 && (
+                          <Button
+                            size="1"
+                            variant="soft"
+                            onClick={() =>
+                              run({ kind: "restore", blocks: [...removed], what: "blocks" }, true)
+                            }
+                          >
+                            Put back all {numberFormat.format(removed.size)}
+                          </Button>
+                        )}
+                      </Flex>
+                    </Card>
+                  </Box>
+                </>
+              )}
+            </Box>
+
+            <Box className="side right">
+              {model !== null && (
+                <>
+                  <Download
+                    model={model}
+                    slots={slots}
+                    assignment={assignment}
+                    name={project.fileName.replace(/\.mcprint$/i, "") || "voxelprint"}
+                  />
+                  <Separator size="4" />
+                  <Facts project={project} />
+                </>
+              )}
+              {saveError !== null && (
+                <Box p="3">
+                  <Callout.Root size="1" color="red">
+                    <Callout.Text>{saveError}</Callout.Text>
+                  </Callout.Root>
+                </Box>
+              )}
+            </Box>
+          </Box>
+        )}
+      </Flex>
+
+      {menu !== null &&
+        model !== null &&
+        (() => {
+          const source = sourceRef.current;
+          const state = source?.structure.palette[source.indices[menu.block] as number];
+          if (source === undefined || source === null || state === undefined) {
+            return null;
+          }
+          const id = blockIdOf(state);
+          const all = blocksOfType(id);
+          const gone = all.filter((block) => removed.has(block)).length;
+          return (
+            <BlockMenu
+              at={menu}
+              state={state}
+              count={all.length}
+              gone={gone}
+              slots={slots}
+              slot={assignment[id] ?? 0}
+              onClose={() => setMenu(null)}
+              onAssign={(slot) =>
+                run(
+                  {
+                    kind: "assign",
+                    blockId: id,
+                    from: assignment[id] ?? 0,
+                    to: slot,
+                    what: id.replace(/^minecraft:/, ""),
+                  },
+                  true,
+                )
+              }
+              onRemove={() => {
+                const edit = removal({ removed, assignment }, [menu.block], id.replace(/^minecraft:/, ""));
+                if (edit !== null) {
+                  run(edit, true);
                 }
-              />
-              <Download
-                model={model}
-                slots={slots}
-                assignment={assignment}
-                name={project.fileName.replace(/\.mcprint$/i, "") || "voxelprint"}
-              />
-            </>
-          )}
-
-          <Facts project={project} />
-        </>
-      )}
-    </main>
+                setMenu(null);
+              }}
+              onRemoveType={() => {
+                const edit = removal({ removed, assignment }, all, id.replace(/^minecraft:/, ""));
+                if (edit !== null) {
+                  run(edit, true);
+                }
+                setMenu(null);
+              }}
+              onRestoreType={() => {
+                run(
+                  {
+                    kind: "restore",
+                    blocks: all.filter((block) => removed.has(block)),
+                    what: id.replace(/^minecraft:/, ""),
+                  },
+                  true,
+                );
+                setMenu(null);
+              }}
+            />
+          );
+        })()}
+    </Theme>
   );
 }

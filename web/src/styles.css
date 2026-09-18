@@ -1,282 +1,248 @@
-:root {
-  color-scheme: light dark;
-  --bg: #f6f6f4;
-  --panel: #ffffff;
-  --text: #1c1c1a;
-  --muted: #6b6b66;
-  --line: #dededa;
-  --accent: #3a6ea5;
-  --error: #a33;
+/*
+ * Layout only.
+ *
+ * Radix Themes paints the components; what is left here is the shape of the
+ * window, which no component library can know: a tool with a viewport in the
+ * middle and panels either side of it, filling the screen rather than sitting
+ * in a column down the middle of it.
+ *
+ * Colours come from Radix's own scales (var(--gray-*), var(--accent-*), ...)
+ * so that light and dark stay in step without a second palette being kept here.
+ */
+
+html,
+body,
+#root {
+  height: 100%;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #17181a;
-    --panel: #202225;
-    --text: #e8e8e6;
-    --muted: #9a9a95;
-    --line: #34363a;
-    --accent: #7aa7d8;
-    --error: #e08b8b;
-  }
-}
-
-* {
-  box-sizing: border-box;
+/*
+ * The theme puts a div of its own between the root and the shell, and a height
+ * of 100% has nothing to measure against unless that one is told as well.
+ */
+#root > .radix-themes {
+  height: 100%;
 }
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
-}
-
-main {
-  max-width: 60rem;
-  margin: 0 auto;
-  padding: 2rem 1rem 4rem;
-}
-
-h1 {
-  margin: 0 0 0.25rem;
-  font-size: 1.6rem;
-}
-
-h2 {
-  margin: 0 0 0.75rem;
-  font-size: 1.1rem;
-}
-
-.muted {
-  color: var(--muted);
-  margin: 0 0 1rem;
-}
-
-.drop {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 2rem 1rem;
-  border: 2px dashed var(--line);
-  border-radius: 10px;
-  background: var(--panel);
-  cursor: pointer;
-  text-align: center;
-}
-
-.drop.dragging {
-  border-color: var(--accent);
-}
-
-.drop input {
-  max-width: 100%;
-}
-
-.panel {
-  margin-top: 1.5rem;
-  padding: 1.25rem;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-}
-
-.facts {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-  gap: 0.5rem 1.5rem;
-  margin: 0;
-}
-
-.facts div {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 0.35rem 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.facts dt {
-  color: var(--muted);
-}
-
-.facts dd {
-  margin: 0;
-  text-align: right;
-}
-
-.blocks {
-  width: 100%;
-  border-collapse: collapse;
-  font-variant-numeric: tabular-nums;
-}
-
-.blocks th,
-.blocks td {
-  padding: 0.3rem 0.5rem;
-  border-bottom: 1px solid var(--line);
-  text-align: left;
-}
-
-.blocks th:first-child,
-.blocks .count {
-  text-align: right;
-  white-space: nowrap;
-  width: 6rem;
-}
-
-.blocks .state {
-  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-  font-size: 0.85em;
-  word-break: break-all;
-}
-
-.error {
-  margin-top: 1rem;
-  padding: 0.75rem 1rem;
-  border-radius: 8px;
-  border: 1px solid var(--error);
-  color: var(--error);
-}
-
-.viewer {
-  width: 100%;
-  border-radius: 8px;
   overflow: hidden;
-  background: #101114;
-  line-height: 0;
+}
+
+/* --- the shell ------------------------------------------------------------ */
+
+.shell {
+  display: grid;
+  /*
+   * The single column has to be named. Left implicit it is sized `auto`, which
+   * means "as wide as the widest child wants to be" -- and the workspace then
+   * shrinks to its two side panels with nothing left for the viewport between
+   * them.
+   */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  min-height: 0;
+}
+
+/*
+ * Panels either side of the viewport.
+ *
+ * The middle column takes what is left, and `minmax(0, 1fr)` is what lets it:
+ * a plain `1fr` refuses to shrink below the canvas inside it, and the panels
+ * get pushed off the screen instead.
+ */
+.workspace {
+  display: grid;
+  grid-template-columns: 22rem minmax(0, 1fr) 21rem;
+  min-height: 0;
+}
+
+.workspace > * {
+  min-height: 0;
+  min-width: 0;
+}
+
+.side {
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-inline-end: 1px solid var(--gray-a5);
+}
+
+.side.right {
+  border-inline-end: none;
+  border-inline-start: 1px solid var(--gray-a5);
+}
+
+/* One narrow column on a screen too small for three. */
+@media (max-width: 1100px) {
+  body {
+    overflow: auto;
+  }
+
+  /* Stacked, the panels are taller than the window and the page scrolls
+     instead of the columns. */
+  .shell {
+    height: auto;
+    min-height: 100%;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .side,
+  .side.right {
+    border-inline: none;
+    border-block-start: 1px solid var(--gray-a5);
+    overflow: visible;
+  }
+
+  /* The build comes first when the columns become a stack: the panels are
+     hundreds of rows long, and the thing somebody came to look at should not
+     be underneath all of them. */
+  .stage {
+    order: -1;
+    height: 70vh;
+  }
+}
+
+/* --- the viewport --------------------------------------------------------- */
+
+.stage {
+  position: relative;
+  display: grid;
+  grid-template-rows: 1fr;
+  min-height: 0;
+  background: var(--gray-2);
+}
+
+/*
+ * The canvas fills its box, and the box is told its size by the grid rather
+ * than by the canvas. Without the absolute positioning the canvas of the last
+ * frame keeps the box at its old height and neither can ever shrink.
+ */
+.viewer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
 }
 
 .viewer canvas {
   display: block;
   width: 100%;
-  height: auto;
-  touch-action: none;
+  height: 100%;
 }
 
-.preview-note {
-  margin: 0.75rem 0 0;
-  font-size: 0.9em;
+/* Floating over the canvas rather than stacked above it, so the picture keeps
+   the whole pane. */
+.overlay {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
 }
 
-.slot-counts {
+.overlay > * {
+  pointer-events: auto;
+}
+
+.overlay.top-left {
+  inset-block-start: 0.75rem;
+  inset-inline-start: 0.75rem;
+}
+
+.overlay.bottom {
+  inset-block-end: 0.75rem;
+  inset-inline: 0.75rem;
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
+  justify-content: center;
 }
 
-.chip {
-  padding: 0.35rem 0.8rem;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
+/* --- the block menu ------------------------------------------------------- */
+
+/* Fixed, because it follows the pointer rather than the layout. */
+.block-menu {
+  position: fixed;
+  z-index: 50;
+  width: 17rem;
+}
+
+/* --- odds and ends -------------------------------------------------------- */
+
+/* A colour input has no useful look of its own; this makes it a swatch. */
+.colour-input {
+  inline-size: 1.75rem;
+  block-size: 1.75rem;
+  padding: 0;
+  border: 1px solid var(--gray-a7);
+  border-radius: var(--radius-2);
+  background: none;
   cursor: pointer;
 }
 
-.chip:hover {
-  border-color: var(--accent);
+.colour-input::-webkit-color-swatch-wrapper {
+  padding: 2px;
 }
 
-.chip.active {
-  border-color: var(--accent);
-  color: var(--accent);
+.colour-input::-webkit-color-swatch {
+  border: none;
+  border-radius: calc(var(--radius-2) - 2px);
 }
 
-/* A chip that holds a number instead of being one, for counts the
-   shortcuts do not cover. */
-.chip.count-input {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.35rem 0.5rem 0.35rem 0.8rem;
-  cursor: text;
-}
-
-.chip.count-input::before {
-  content: "or";
-  margin-right: 0.5rem;
-  color: var(--muted);
-}
-
-.chip.count-input input {
-  width: 3.5rem;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  padding: 0;
-}
-
-.chip.count-input input:focus {
-  outline: none;
-}
-
-.panel.upload {
-  padding-bottom: 1rem;
-}
-
-.slots {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-  gap: 0.5rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.slots li {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.slots input[type="color"] {
-  width: 2.5rem;
-  height: 2rem;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: transparent;
-  cursor: pointer;
-}
-
-.slots input[type="text"] {
-  flex: 1;
-  min-width: 0;
-  padding: 0.35rem 0.5rem;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
-}
-
-.assign {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+.colour-input::-moz-color-swatch {
+  border: none;
+  border-radius: calc(var(--radius-2) - 2px);
 }
 
 .swatch {
-  /* A span, so it needs blockifying before width and height mean anything.
-     Inside .assign the flex container did that; on its own nothing did. */
   display: inline-block;
-  vertical-align: middle;
-  width: 1rem;
-  height: 1rem;
-  border-radius: 3px;
-  border: 1px solid var(--line);
+  inline-size: 0.9rem;
+  block-size: 0.9rem;
+  border-radius: var(--radius-1);
+  border: 1px solid var(--gray-a6);
   flex: none;
 }
 
-.assign select {
-  padding: 0.25rem 0.4rem;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
+/* The drop target, which is the whole window before anything is open. */
+.dropzone {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 2rem;
+  text-align: center;
+}
+
+.dropzone .target {
+  inline-size: 100%;
+  border: 2px dashed var(--gray-a7);
+  border-radius: var(--radius-4);
+  padding: 3rem 2rem;
+  cursor: pointer;
+  transition: border-color 120ms, background-color 120ms;
+}
+
+.dropzone .target:hover,
+.dropzone .target.dragging {
+  border-color: var(--accent-9);
+  background: var(--accent-a2);
+}
+
+.dropzone input[type="file"] {
+  display: none;
+}
+
+/* A table of a few hundred block types needs its header to stay put. */
+.sticky-head thead th {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  background: var(--color-panel-solid);
+}
+
+/* A chip that is a checkbox rather than a button. */
+.chip.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
 }

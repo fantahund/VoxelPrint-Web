@@ -268,32 +268,29 @@ if SETTINGS in names:
 # --- painting ---------------------------------------------------------------
 # One character per four bits, lowest first: slot 1 is "4", slot 2 is "8",
 # and beyond that "c" plus the rest. Checked against the slot the part asks for.
-def expected_paint(slot):
-    if slot <= 2:
-        return "%x" % (slot << 2)
-    if slot <= 17:
-        return "c%x" % (slot - 3)
-    return "cf%x" % (slot - 18)
-
 if SETTINGS in names:
     config = ET.fromstring(z.read(SETTINGS))
     for obj in config.findall("object"):
         for part in obj.findall("part"):
             keys = {m.get("key"): m.get("value") for m in part.findall("metadata")}
-            slot = int(keys.get("extruder", "1"))
+            if "extruder" not in keys:
+                fail("part %s names no extruder" % part.get("id"))
+                continue
             target = ids.get(part.get("id"))
             if target is None:
                 continue
+            # Painting every triangle is what an OrcaSlicer update started
+            # dying on, so it must stay gone. The parts carry the colour.
             mesh = target.find("{%s}mesh" % CORE)
-            if mesh is None:
-                continue
-            painted = {t.get("paint_color") for t in mesh.find("{%s}triangles" % CORE)}
-            if painted != {expected_paint(slot)}:
-                fail("part %s is on slot %d but painted %s, expected %r"
-                     % (part.get("id"), slot, sorted(x for x in painted if x), expected_paint(slot)))
-            else:
-                ok("part %s: every triangle painted %r for slot %d"
-                   % (part.get("id"), expected_paint(slot), slot))
+            if mesh is not None:
+                painted = [t for t in mesh.find("{%s}triangles" % CORE)
+                           if t.get("paint_color") is not None]
+                if painted:
+                    fail("part %s paints %d triangles; a slicer chokes on that"
+                         % (part.get("id"), len(painted)))
+                else:
+                    ok("part %s: extruder %s, no per triangle painting"
+                       % (part.get("id"), keys["extruder"]))
 
 items = list(build)
 for item in items:

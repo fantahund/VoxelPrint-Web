@@ -3,13 +3,40 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { SceneColours, VoxelModel } from "./buildVoxels";
 
-interface Scene {
-  /** The boxes, for blocks the export has no model for. Null when there are none. */
+/** What a right click in the preview landed on. */
+export interface Pick {
+  /** Which block of the selection it was. */
+  readonly block: number;
+  /** Where to put the menu, in client coordinates. */
+  readonly x: number;
+  readonly y: number;
+}
+
+/** The corner to corner box of one block, in model coordinates. */
+interface Bounds {
+  min: [number, number, number];
+  max: [number, number, number];
+}
+
+/** Everything that outlives the model: the canvas, the camera, the loop. */
+interface Stage {
+  readonly camera: THREE.PerspectiveCamera;
+  readonly controls: OrbitControls;
+  readonly outline: THREE.LineSegments;
+  /** The group every model's meshes hang from, so one call empties the build. */
+  readonly build: THREE.Group;
+  readonly dispose: () => void;
+}
+
+/** Everything belonging to one model, thrown away when it is replaced. */
+interface Build {
   readonly boxes: THREE.InstancedMesh | null;
   /** One instanced mesh per block state that has a real model. */
   readonly meshes: readonly THREE.InstancedMesh[];
   /** Shared by every mesh, so switching colour mode is one flag rather than many. */
   readonly meshMaterial: THREE.MeshLambertMaterial;
+  /** Where each block sits, for the frame drawn under the pointer. */
+  readonly bounds: ReadonlyMap<number, Bounds>;
   readonly dispose: () => void;
 }
 
@@ -23,9 +50,20 @@ interface Scene {
  * game draws by hand -- falls back to a shared unit cube scaled to its shape.
  * Either way the number of draw calls follows the palette, not the build.
  *
- * <p>Geometry and colours are kept in separate effects on purpose. Changing a
- * filament rewrites one buffer per mesh; rebuilding the scene for every colour
- * tweak would throw away and re-upload every position.
+ * <p>Three effects, and which is which matters:
+ *
+ * <ul>
+ *   <li>the stage -- canvas, camera, controls, lights, the animation loop --
+ *       is built once and outlives every model. Editing a build replaces the
+ *       model on every click, and a camera rebuilt along with it would throw
+ *       the view back to its starting angle each time.
+ *   <li>the build is rebuilt when the model is, which is the geometry alone.
+ *   <li>colours are their own effect again: changing a filament rewrites one
+ *       buffer per mesh rather than re-uploading every position.
+ * </ul>
+ *
+ * <p>The view is framed once per {@code frame} rather than once per model, so a
+ * newly opened project is centred and an edited one is left where it was put.
  *
  * <p>WebGL resources are disposed of by hand. They are not garbage collected,
  * so uploading a few files in a row would otherwise leak the graphics memory of
@@ -34,13 +72,27 @@ interface Scene {
 export default function Viewer({
   model,
   colours,
+  onPick,
+  frame,
 }: {
   model: VoxelModel;
   colours: SceneColours;
+  /** Called when a block is right clicked, or null to leave picking off. */
+  onPick?: ((pick: Pick) => void) | null;
+  /** Changes when the view should be framed afresh, such as for a new project. */
+  frame?: string;
 }): React.ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
-  const sceneRef = useRef<Scene | null>(null);
+  const stageRef = useRef<Stage | null>(null);
+  const buildRef = useRef<Build | null>(null);
+  // Held in refs rather than closed over: the stage is built once, and anything
+  // baked into it would keep seeing whichever value existed at that moment.
+  const modelRef = useRef(model);
+  modelRef.current = model;
+  const pickRef = useRef(onPick);
+  pickRef.current = onPick;
 
+  // --- the stage, built once -------------------------------------------------
   useEffect(() => {
     const host = hostRef.current;
     if (host === null) {
@@ -54,6 +106,221 @@ export default function Viewer({
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     host.appendChild(renderer.domElement);
+
+    const build = new THREE.Group();
+    scene.add(build);
+
+    // Two lights from opposite sides plus ambient, so no face is fully black
+    // and the shape of the build stays readable from every angle.
+    scene.add(new THREE.AmbientLight(0xffffff, 1.4));
+    const key = new THREE.DirectionalLight(0xffffff, 1.6);
+    key.position.set(1, 2, 1.5);
+    scene.add(key);
+    const fill = new THREE.DirectionalLight(0xffffff, 0.7);
+    fill.position.set(-1.5, -0.5, -1);
+    scene.add(fill);
+
+    // The block under the pointer, framed the way the game frames one: dark
+    // lines along its edges and nothing else, so it reads as a pointer rather
+    // than as a change to the build.
+    const outlineGeometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
+    const outlineMaterial = new THREE.LineBasicMaterial({
+      color: 0x000000,
+      // Drawn over whatever it surrounds. Without this the frame is buried in
+      // the block it is meant to be pointing at.
+      depthTest: false,
+      transparent: true,
+      opacity: 0.9,
+    });
+    const outline = new THREE.LineSegments(outlineGeometry, outlineMaterial);
+    outline.visible = false;
+    outline.renderOrder = 1;
+    scene.add(outline);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.target.set(0, 0, 0);
+    camera.position.set(30, 24, 30);
+    controls.update();
+
+    // The canvas takes whatever box it is given rather than choosing a height
+    // from its width: it fills a pane of the window now, and that pane's height
+    // is the window's, not a ratio of anything.
+    const resize = (): void => {
+      const width = Math.max(host.clientWidth, 1);
+      const height = Math.max(host.clientHeight, 1);
+      renderer.setSize(width, height, false);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+    };
+    resize();
+
+    const observer = new ResizeObserver(resize);
+    observer.observe(host);
+
+    // --- picking -------------------------------------------------------------
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    /** Where the pointer is, or null when it has left the canvas. */
+    let hovering: { x: number; y: number } | null = null;
+    /**
+     * Whether the frame under the pointer could have changed.
+     *
+     * <p>Casting a ray tests every instance of every mesh, so doing it on a
+     * still view sixty times a second is work for nothing. It is only worth
+     * repeating when the pointer moves, the build turns, or the build itself
+     * is replaced.
+     */
+    let recheck = true;
+    const lastCamera = new THREE.Vector3();
+
+    /** Which block is under these client coordinates, or null for a miss. */
+    const blockAt = (clientX: number, clientY: number): number | null => {
+      const current = buildRef.current;
+      if (current === null) {
+        return null;
+      }
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+
+      const pickable = [
+        ...current.meshes,
+        ...(current.boxes === null ? [] : [current.boxes]),
+      ];
+      // Nearest first, which is what the raycaster sorts by, so a wall in front
+      // is picked rather than the room behind it.
+      for (const hit of raycaster.intersectObjects(pickable, false)) {
+        const instance = hit.instanceId;
+        if (instance === undefined) {
+          continue;
+        }
+        const block =
+          hit.object === current.boxes
+            ? modelRef.current.solidBlocks[instance]
+            : modelRef.current.meshes[current.meshes.indexOf(hit.object as THREE.InstancedMesh)]
+                ?.blockIndices[instance];
+        if (block !== undefined) {
+          return block;
+        }
+      }
+      return null;
+    };
+
+    const contextMenu = (event: MouseEvent): void => {
+      const handle = pickRef.current;
+      if (handle == null) {
+        return;
+      }
+      // Always swallow the browser's own menu while picking is on, or a miss
+      // would open it over the preview.
+      event.preventDefault();
+      const block = blockAt(event.clientX, event.clientY);
+      if (block !== null) {
+        handle({ block, x: event.clientX, y: event.clientY });
+      }
+    };
+
+    // Only the position is taken here. Casting a ray on every pointer event
+    // would mean several per frame on a build of any size, so the work is left
+    // to the draw loop, which runs once a frame and also catches the build
+    // turning under a pointer that has not moved.
+    const pointerMove = (event: PointerEvent): void => {
+      hovering = { x: event.clientX, y: event.clientY };
+      recheck = true;
+    };
+    const pointerLeave = (): void => {
+      hovering = null;
+      recheck = true;
+    };
+
+    renderer.domElement.addEventListener("contextmenu", contextMenu);
+    renderer.domElement.addEventListener("pointermove", pointerMove);
+    renderer.domElement.addEventListener("pointerleave", pointerLeave);
+
+    let loop = 0;
+    /** Which build the frame on screen was worked out against. */
+    let outlinedIn: Build | null = null;
+    const draw = (): void => {
+      loop = requestAnimationFrame(draw);
+      controls.update();
+
+      if (!camera.position.equals(lastCamera)) {
+        lastCamera.copy(camera.position);
+        recheck = true;
+      }
+
+      const current = buildRef.current;
+      if (current !== outlinedIn) {
+        // A rebuilt model means new instances, and the block the last cast
+        // found no longer means anything.
+        outlinedIn = current;
+        recheck = true;
+      }
+
+      if (recheck) {
+        recheck = false;
+        const where =
+          hovering === null || pickRef.current == null || current === null
+            ? null
+            : blockAt(hovering.x, hovering.y);
+        const box = where === null || current === null ? undefined : current.bounds.get(where);
+        if (box === undefined) {
+          outline.visible = false;
+        } else {
+          outline.visible = true;
+          outline.position.set(
+            (box.min[0] + box.max[0]) / 2,
+            (box.min[1] + box.max[1]) / 2,
+            (box.min[2] + box.max[2]) / 2,
+          );
+          // A shade larger than the block, or the frame and the faces fight
+          // over the same pixels and the lines break up as the build turns.
+          outline.scale.set(
+            (box.max[0] - box.min[0]) * 1.004 + 0.002,
+            (box.max[1] - box.min[1]) * 1.004 + 0.002,
+            (box.max[2] - box.min[2]) * 1.004 + 0.002,
+          );
+        }
+      }
+
+      renderer.render(scene, camera);
+    };
+    draw();
+
+    stageRef.current = {
+      camera,
+      controls,
+      outline,
+      build,
+      dispose: () => {
+        cancelAnimationFrame(loop);
+        renderer.domElement.removeEventListener("contextmenu", contextMenu);
+        renderer.domElement.removeEventListener("pointermove", pointerMove);
+        renderer.domElement.removeEventListener("pointerleave", pointerLeave);
+        observer.disconnect();
+        controls.dispose();
+        outlineGeometry.dispose();
+        outlineMaterial.dispose();
+        renderer.dispose();
+        host.removeChild(renderer.domElement);
+      },
+    };
+
+    return () => {
+      stageRef.current?.dispose();
+      stageRef.current = null;
+    };
+  }, []);
+
+  // --- the build, rebuilt with the model -------------------------------------
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (stage === null) {
+      return;
+    }
+    stage.outline.visible = false;
 
     const disposables: Array<{ dispose: () => void }> = [];
 
@@ -89,7 +356,7 @@ export default function Viewer({
       }
       mesh.instanceMatrix.needsUpdate = true;
       mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(block.blocks * 3), 3);
-      scene.add(mesh);
+      stage.build.add(mesh);
       meshes.push(mesh);
     }
 
@@ -121,23 +388,49 @@ export default function Viewer({
       }
       boxes.instanceMatrix.needsUpdate = true;
       boxes.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(model.boxes * 3), 3);
-      scene.add(boxes);
+      stage.build.add(boxes);
     }
 
-    // Two lights from opposite sides plus ambient, so no face is fully black
-    // and the shape of the build stays readable from every angle.
-    scene.add(new THREE.AmbientLight(0xffffff, 1.4));
-    const key = new THREE.DirectionalLight(0xffffff, 1.6);
-    key.position.set(1, 2, 1.5);
-    scene.add(key);
-    const fill = new THREE.DirectionalLight(0xffffff, 0.7);
-    fill.position.set(-1.5, -0.5, -1);
-    scene.add(fill);
+    const theseBoxes = boxes;
+    buildRef.current = {
+      boxes,
+      meshes,
+      meshMaterial,
+      bounds: boundsPerBlock(model),
+      dispose: () => {
+        for (const mesh of meshes) {
+          stage.build.remove(mesh);
+          mesh.dispose();
+        }
+        if (theseBoxes !== null) {
+          stage.build.remove(theseBoxes);
+          theseBoxes.dispose();
+        }
+        for (const resource of disposables) {
+          resource.dispose();
+        }
+      },
+    };
 
-    // Frame the model: back off far enough that the whole build fits, measured
-    // across everything drawn rather than one mesh of it.
+    return () => {
+      buildRef.current?.dispose();
+      buildRef.current = null;
+    };
+    // Colours have an effect of their own, and must not rebuild the geometry.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model]);
+
+  // --- framing, once per project ---------------------------------------------
+  useEffect(() => {
+    const stage = stageRef.current;
+    const current = buildRef.current;
+    if (stage === null || current === null) {
+      return;
+    }
+
+    // Measured across everything drawn rather than one mesh of it.
     const bounds = new THREE.Box3();
-    for (const mesh of [...meshes, ...(boxes === null ? [] : [boxes])]) {
+    for (const mesh of [...current.meshes, ...(current.boxes === null ? [] : [current.boxes])]) {
       mesh.computeBoundingBox();
       if (mesh.boundingBox !== null) {
         bounds.union(mesh.boundingBox);
@@ -145,62 +438,16 @@ export default function Viewer({
     }
     const sphere = bounds.isEmpty() ? null : bounds.getBoundingSphere(new THREE.Sphere());
     const radius = sphere === null || sphere.radius <= 0 ? 16 : sphere.radius;
-    const distance = (radius * 1.4) / Math.sin((camera.fov * Math.PI) / 360);
+    const distance = (radius * 1.4) / Math.sin((stage.camera.fov * Math.PI) / 360);
 
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.target.set(0, 0, 0);
-    camera.position.set(distance * 0.7, distance * 0.55, distance * 0.7);
-    controls.update();
+    stage.controls.target.set(0, 0, 0);
+    stage.camera.position.set(distance * 0.7, distance * 0.55, distance * 0.7);
+    stage.controls.update();
+  }, [frame]);
 
-    const resize = (): void => {
-      const width = host.clientWidth;
-      const height = Math.max(Math.round(width * 0.6), 320);
-      renderer.setSize(width, height, false);
-      camera.aspect = width / height;
-      camera.updateProjectionMatrix();
-    };
-    resize();
-
-    const observer = new ResizeObserver(resize);
-    observer.observe(host);
-
-    let frame = 0;
-    const draw = (): void => {
-      frame = requestAnimationFrame(draw);
-      controls.update();
-      renderer.render(scene, camera);
-    };
-    draw();
-
-    sceneRef.current = {
-      boxes,
-      meshes,
-      meshMaterial,
-      dispose: () => {
-        cancelAnimationFrame(frame);
-        observer.disconnect();
-        controls.dispose();
-        for (const mesh of meshes) {
-          mesh.dispose();
-        }
-        boxes?.dispose();
-        for (const resource of disposables) {
-          resource.dispose();
-        }
-        renderer.dispose();
-        host.removeChild(renderer.domElement);
-      },
-    };
-
-    return () => {
-      sceneRef.current?.dispose();
-      sceneRef.current = null;
-    };
-  }, [model]);
-
+  // --- colours ----------------------------------------------------------------
   useEffect(() => {
-    const current = sceneRef.current;
+    const current = buildRef.current;
     if (current === null) {
       return;
     }
@@ -228,7 +475,51 @@ export default function Viewer({
       boxes.array.set(colours.boxes.subarray(0, boxes.array.length));
       boxes.needsUpdate = true;
     }
-  }, [colours]);
+    // Also after a rebuild, which starts every instance colour at black.
+  }, [colours, model]);
 
   return <div className="viewer" ref={hostRef} />;
+}
+
+/**
+ * Where each block of the build sits, corner to corner.
+ *
+ * <p>Worked out once per model rather than per pointer move: a hover otherwise
+ * means walking every solid in the build, sixty times a second.
+ *
+ * <p>A block's box is the union of its solids, so a stair is framed around both
+ * of its steps and a fence around its post and rails together. One frame per
+ * block, which is what the game draws and what somebody is pointing at.
+ */
+function boundsPerBlock(model: VoxelModel): Map<number, Bounds> {
+  const bounds = new Map<number, Bounds>();
+
+  for (let i = 0; i < model.solids; i++) {
+    const block = model.solidBlocks[i];
+    if (block === undefined) {
+      continue;
+    }
+    const cx = model.positions[i * 3] as number;
+    const cy = model.positions[i * 3 + 1] as number;
+    const cz = model.positions[i * 3 + 2] as number;
+    const sx = (model.scales[i * 3] as number) / 2;
+    const sy = (model.scales[i * 3 + 1] as number) / 2;
+    const sz = (model.scales[i * 3 + 2] as number) / 2;
+
+    const known = bounds.get(block);
+    if (known === undefined) {
+      bounds.set(block, {
+        min: [cx - sx, cy - sy, cz - sz],
+        max: [cx + sx, cy + sy, cz + sz],
+      });
+      continue;
+    }
+    known.min[0] = Math.min(known.min[0], cx - sx);
+    known.min[1] = Math.min(known.min[1], cy - sy);
+    known.min[2] = Math.min(known.min[2], cz - sz);
+    known.max[0] = Math.max(known.max[0], cx + sx);
+    known.max[1] = Math.max(known.max[1], cy + sy);
+    known.max[2] = Math.max(known.max[2], cz + sz);
+  }
+  return bounds;
 }

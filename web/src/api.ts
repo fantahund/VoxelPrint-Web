@@ -54,7 +54,11 @@ export async function savePrinting(id: string, plan: PrintingPlan): Promise<void
   const response = await fetch(`/api/projects/${encodeURIComponent(id)}/printing`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ slots: plan.slots, assignment: plan.assignment }),
+    body: JSON.stringify({
+      slots: plan.slots,
+      assignment: plan.assignment,
+      removed: plan.removed ?? [],
+    }),
   });
   if (!response.ok) {
     throw new Error(await failure(response));

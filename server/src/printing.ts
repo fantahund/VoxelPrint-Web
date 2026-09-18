@@ -11,6 +11,13 @@ import { z } from "zod";
  */
 const MAX_SLOTS = 64;
 const MAX_BLOCK_TYPES = 4096;
+/**
+ * How many blocks a plan may say were taken out by hand.
+ *
+ * <p>One per block of the largest selection the mod will export, so a plan can
+ * remove all of them and still be stored.
+ */
+const MAX_REMOVED = 1 << 20;
 const MAX_NAME_LENGTH = 64;
 const MAX_BLOCK_ID_LENGTH = 256;
 
@@ -26,6 +33,9 @@ export const printingPlanSchema = z
       z.string().min(1).max(MAX_BLOCK_ID_LENGTH),
       z.number().int().min(0).max(MAX_SLOTS - 1),
     ),
+    // Indices into the selection. Absent on a plan written before the preview
+    // could edit one, which must keep loading.
+    removed: z.array(z.number().int().min(0)).max(MAX_REMOVED).optional(),
   })
   .refine((plan) => Object.keys(plan.assignment).length <= MAX_BLOCK_TYPES, {
     message: `an assignment may name at most ${MAX_BLOCK_TYPES} block types`,

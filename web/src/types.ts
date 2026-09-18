@@ -89,6 +89,8 @@ export interface FilamentSlotData {
 export interface PrintingPlan {
   slots: FilamentSlotData[];
   assignment: Record<string, number>;
+  /** Blocks taken out in the preview, as indices into the selection. */
+  removed?: number[];
   updatedAt?: string;
 }
 

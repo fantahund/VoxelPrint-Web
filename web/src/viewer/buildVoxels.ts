@@ -2,6 +2,9 @@ import { srgbToLinear } from "../colour";
 import { colourFor, isAir, UNKNOWN_COLOUR } from "./blockColors";
 import type { BlockModels, ShapeBox, StructureInfo } from "../types";
 
+/** Stands in for "nothing removed", so the common case allocates nothing. */
+const EMPTY: ReadonlySet<number> = new Set<number>();
+
 /** A block with no shape data is drawn as the whole cube. */
 const FULL_BLOCK: ShapeBox = [0, 0, 0, 1, 1, 1];
 
@@ -43,6 +46,14 @@ export interface BlockMesh {
   /** Where the blocks of this state stand, three floats each. */
   readonly offsets: Float32Array;
   readonly blocks: number;
+  /**
+   * Which block of the selection each instance is, as an index into it.
+   *
+   * <p>What lets a click in the preview name a block. An instance is otherwise
+   * anonymous: the offsets say where it stands, and nothing says which block
+   * that was, because the preview skips air and everything walled in.
+   */
+  readonly blockIndices: Uint32Array;
 }
 
 export interface VoxelModel {
@@ -96,6 +107,18 @@ export interface VoxelModel {
   readonly blockTypeColours: Readonly<Record<string, number>>;
   /** Solid blocks per block id, most common first. */
   readonly typeCounts: ReadonlyArray<readonly [string, number]>;
+  /**
+   * Which block of the selection each solid belongs to, index for index with
+   * {@link #positions}.
+   *
+   * <p>Several solids share one block, a stair being two and a fence several,
+   * so this is not one to one.
+   */
+  readonly solidBlocks: Uint32Array;
+  /** Palette entry per block index, so a click can name what it hit. */
+  readonly blockStates: readonly string[];
+  /** How many blocks were left out because they were removed by hand. */
+  readonly removed: number;
 }
 
 function isFullBlock(box: ShapeBox): boolean {
@@ -134,6 +157,7 @@ export function buildVoxels(
   structure: StructureInfo,
   indices: Uint32Array,
   models: BlockModels | null,
+  removed: ReadonlySet<number> = EMPTY,
 ): VoxelModel {
   const { width, height, depth, palette } = structure;
 
@@ -175,7 +199,14 @@ export function buildVoxels(
       // Outside the selection counts as open, so the outer shell is drawn.
       return false;
     }
-    return occludes[indices[at(x, y, z)] as number] === true;
+    const where = at(x, y, z);
+    // A block taken out by hand reads as air here as well, so its neighbours
+    // get the faces they were hiding behind it. Culling against the block that
+    // is no longer there would leave a hole in the wall around the gap.
+    if (removed.has(where)) {
+      return false;
+    }
+    return occludes[indices[where] as number] === true;
   };
 
   // Two groups, joined at the end: first the boxes the preview draws, then the
@@ -189,9 +220,14 @@ export function buildVoxels(
   const extraDrawn: number[] = [];
   /** Block corners per palette entry, for the entries drawn as real models. */
   const offsets = palette.map((): number[] => []);
+  /** Which block each mesh instance is, in step with {@code offsets}. */
+  const offsetBlocks = palette.map((): number[] => []);
+  const solidBlocks: number[] = [];
+  const extraSolidBlocks: number[] = [];
   const counts = new Map<string, number>();
   let solid = 0;
   let visible = 0;
+  let removedCount = 0;
 
   const halfWidth = width / 2;
   const halfHeight = height / 2;
@@ -200,8 +236,15 @@ export function buildVoxels(
   for (let y = 0; y < height; y++) {
     for (let z = 0; z < depth; z++) {
       for (let x = 0; x < width; x++) {
-        const index = indices[at(x, y, z)] as number;
+        const where = at(x, y, z);
+        const index = indices[where] as number;
         if (air[index]) {
+          continue;
+        }
+        if (removed.has(where)) {
+          // Counted rather than skipped silently, so the interface can say how
+          // much was taken out and offer to put it back.
+          removedCount++;
           continue;
         }
         solid++;
@@ -231,6 +274,7 @@ export function buildVoxels(
         const modelled = hasModel[index] === true;
         if (modelled) {
           (offsets[index] as number[]).push(originX, originY, originZ);
+          (offsetBlocks[index] as number[]).push(where);
         }
 
         // A solid block whose shape came out empty becomes the whole cube
@@ -249,6 +293,7 @@ export function buildVoxels(
           );
           intoScales.push(box[3] - box[0], box[4] - box[1], box[5] - box[2]);
           intoDrawn.push(index);
+          (modelled ? extraSolidBlocks : solidBlocks).push(where);
         }
       }
     }
@@ -262,7 +307,7 @@ export function buildVoxels(
     if (where.length === 0 || faces === undefined || faces.length === 0) {
       continue;
     }
-    meshes.push(buildMesh(index, faces, models, where));
+    meshes.push(buildMesh(index, faces, models, where, offsetBlocks[index] as number[]));
     quadCount += faces.length * (where.length / 3);
   }
 
@@ -284,6 +329,9 @@ export function buildVoxels(
     minecraftColours,
     blockTypeColours: colourPerBlockType(blockIds, minecraftColours, typeCounts),
     typeCounts,
+    solidBlocks: Uint32Array.from([...solidBlocks, ...extraSolidBlocks]),
+    blockStates: palette,
+    removed: removedCount,
   };
 }
 
@@ -300,6 +348,7 @@ function buildMesh(
   faces: BlockModels["models"][number],
   models: BlockModels | null,
   offsets: readonly number[],
+  blockIndices: readonly number[],
 ): BlockMesh {
   const corners = faces.length * 6;
   const positions = new Float32Array(corners * 3);
@@ -341,6 +390,7 @@ function buildMesh(
     normals,
     colours,
     offsets: Float32Array.from(offsets),
+    blockIndices: Uint32Array.from(blockIndices),
     blocks: offsets.length / 3,
   };
 }
