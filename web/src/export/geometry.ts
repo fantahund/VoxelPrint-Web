@@ -143,6 +143,8 @@ export function solidsBySlot(
   // as a lump of plastic in the middle of a hollow build. Solid mode keeps them
   // solid, which is what it is for.
   const shelled: Facet[] = [];
+  /** Solid boxes per filament, joined across shapes once they are all in. */
+  const volumes: Point[][][] = Array.from({ length: slotCount }, () => []);
   const boxCount = options.geometry === "shell" ? model.boxes : model.solids;
   for (let i = 0; i < boxCount; i++) {
     const slot = slotOf(model.paletteIndices[i] as number);
@@ -160,7 +162,11 @@ export function solidsBySlot(
         corner[2] === 0 ? cz - sz / 2 : cz + sz / 2,
       ),
     );
-    (grouped[slot] as Solid[]).push(box);
+    if (options.geometry === "shell") {
+      (volumes[slot] as Point[][]).push(box);
+    } else {
+      (grouped[slot] as Solid[]).push(box);
+    }
 
     if (options.geometry === "shell") {
       // A block the game draws by hand -- a chest, a statue -- has no model to
@@ -260,7 +266,7 @@ export function solidsBySlot(
             (corner[2] === 0 ? z0 + (part[2] as number) : z1 - 1 + (part[5] as number)) - model.size.depth / 2,
           ),
         );
-        (grouped[slot] as Solid[]).push(corners);
+        (volumes[slot] as Point[][]).push(corners);
         // Its sides still hide what presses against them, but print nothing of
         // their own: they are inside the solid already.
         for (const face of FACES) {
@@ -329,6 +335,17 @@ export function solidsBySlot(
         // face is the one to keep, and a sheet comes out as a single wall.
         surface.set(key, { slot, corners, normal, owner });
       }
+    }
+  }
+
+  // Shapes were joined among their own kind; this joins what is left across
+  // them. Earth beside a dirt path is two shapes and, on one filament, has no
+  // business being two bodies: a slicer walls every body it is given, and the
+  // wall between them is inside the ground. Different filaments stay apart --
+  // that boundary is the colour, not an accident.
+  for (let slot = 0; slot < slotCount; slot++) {
+    for (const box of joinSolids(volumes[slot] ?? [])) {
+      (grouped[slot] as Solid[]).push(box);
     }
   }
 
@@ -1079,4 +1096,136 @@ function area(tiles: readonly Tile[]): number {
     total += (tile.u1 - tile.u0) * (tile.v1 - tile.v0);
   }
   return total;
+}
+
+/**
+ * Joins axis aligned solids of one filament into as few boxes as it can.
+ *
+ * <p>The shape by shape join cannot see across kinds: earth is a cube and a
+ * dirt path is a cube a sixteenth short, so the two never met even standing
+ * side by side on the same filament. This one works on the finished boxes, so
+ * it does not care what they came from.
+ *
+ * <p>The corners of every box are taken as the cut lines of a grid, which makes
+ * the boxes whole cells of it; the cells anything covers are then joined back
+ * greedily. The union is preserved exactly -- a cell is covered or it is not --
+ * so the printed shape cannot change. Where two boxes overlapped, the overlap
+ * is now counted once, which is what it always was.
+ */
+function joinSolids(boxes: readonly Point[][]): Point[][] {
+  if (boxes.length < 2) {
+    return [...boxes];
+  }
+
+  const spans = boxes.map((box) => {
+    const low = [Infinity, Infinity, Infinity];
+    const high = [-Infinity, -Infinity, -Infinity];
+    for (const corner of box) {
+      for (let axis = 0; axis < 3; axis++) {
+        low[axis] = Math.min(low[axis] as number, corner[axis] as number);
+        high[axis] = Math.max(high[axis] as number, corner[axis] as number);
+      }
+    }
+    return { low, high };
+  });
+
+  const lines = [0, 1, 2].map((axis) =>
+    [...new Set(spans.flatMap((span) => [span.low[axis] as number, span.high[axis] as number]))].sort(
+      (a, b) => a - b,
+    ),
+  );
+  const counts = lines.map((line) => Math.max(line.length - 1, 0));
+  // A build with very many different edges would make a grid too large to be
+  // worth walking; those keep the boxes they have.
+  const [cx, cy, cz] = counts as [number, number, number];
+  if (cx === 0 || cy === 0 || cz === 0 || cx * cy * cz > 4_000_000) {
+    return [...boxes];
+  }
+
+  const [nx, ny, nz] = [cx, cy, cz];
+  const filled = new Uint8Array(nx * ny * nz);
+  const cell = (x: number, y: number, z: number): number => (x * ny + y) * nz + z;
+  const from = (axis: number, value: number): number => {
+    const line = lines[axis] as number[];
+    let i = 0;
+    while (i + 1 < line.length && (line[i + 1] as number) <= value + 1e-9) {
+      i++;
+    }
+    return i;
+  };
+
+  for (const span of spans) {
+    for (let x = from(0, span.low[0] as number); x < from(0, span.high[0] as number); x++) {
+      for (let y = from(1, span.low[1] as number); y < from(1, span.high[1] as number); y++) {
+        for (let z = from(2, span.low[2] as number); z < from(2, span.high[2] as number); z++) {
+          filled[cell(x, y, z)] = 1;
+        }
+      }
+    }
+  }
+
+  const joined: Point[][] = [];
+  for (let x = 0; x < nx; x++) {
+    for (let y = 0; y < ny; y++) {
+      for (let z = 0; z < nz; z++) {
+        if (filled[cell(x, y, z)] !== 1) {
+          continue;
+        }
+        let dz = 1;
+        while (z + dz < nz && filled[cell(x, y, z + dz)] === 1) {
+          dz++;
+        }
+        let dy = 1;
+        grow: while (y + dy < ny) {
+          for (let k = 0; k < dz; k++) {
+            if (filled[cell(x, y + dy, z + k)] !== 1) {
+              break grow;
+            }
+          }
+          dy++;
+        }
+        let dx = 1;
+        stack: while (x + dx < nx) {
+          for (let j = 0; j < dy; j++) {
+            for (let k = 0; k < dz; k++) {
+              if (filled[cell(x + dx, y + j, z + k)] !== 1) {
+                break stack;
+              }
+            }
+          }
+          dx++;
+        }
+
+        for (let i = 0; i < dx; i++) {
+          for (let j = 0; j < dy; j++) {
+            for (let k = 0; k < dz; k++) {
+              filled[cell(x + i, y + j, z + k)] = 0;
+            }
+          }
+        }
+
+        const low = [
+          (lines[0] as number[])[x] as number,
+          (lines[1] as number[])[y] as number,
+          (lines[2] as number[])[z] as number,
+        ];
+        const high = [
+          (lines[0] as number[])[x + dx] as number,
+          (lines[1] as number[])[y + dy] as number,
+          (lines[2] as number[])[z + dz] as number,
+        ];
+        joined.push(
+          CORNERS.map(
+            (corner) =>
+              [
+                corner[0] === 0 ? low[0] : high[0],
+                corner[1] === 0 ? low[1] : high[1],
+                corner[2] === 0 ? low[2] : high[2],
+              ] as unknown as Point,
+          ),
+        );
+      }
+    }
+  }
+  return joined;
 }
