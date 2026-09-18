@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/colour.ts","./src/main.tsx","./src/types.ts","./src/export/threemf.ts","./src/slots/filament.ts","./src/slots/palette.ts","./src/viewer/viewer.tsx","./src/viewer/blockcolors.ts","./src/viewer/buildvoxels.ts"],"version":"5.9.3"}

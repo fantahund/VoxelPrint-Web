@@ -1,0 +1,17 @@
+services:
+  voxelprint:
+    build: .
+    image: voxelprint-web:latest
+    container_name: voxelprint
+    restart: unless-stopped
+    ports:
+      # Format: "Host-Port:Container-Port"
+      # Ändere die erste 3000, wenn du einen anderen Port nach außen freigeben möchtest
+      - "3000:3000"
+    volumes:
+      - voxelprint_data:/data
+    environment:
+      - NODE_ENV=production
+
+volumes:
+  voxelprint_data:
