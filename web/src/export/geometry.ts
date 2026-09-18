@@ -214,31 +214,46 @@ export function solidsBySlot(
   // 1.2 mm wall is thinner than the three perimeters a printer profile asks
   // for, so a shell is filled with perimeters and never with infill. Measured
   // on two builds, 44 % and 22 % of the drawn blocks are such cubes.
-  const cubesBySlot = new Map<number, Array<[number, number, number]>>();
+  const boxed = new Map<
+    string,
+    { slot: number; shape: [number, number, number, number, number, number]; cells: Array<[number, number, number]> }
+  >();
   for (const mesh of model.meshes) {
-    if (!isUnitCube(mesh.quads)) {
+    const shape = asSolidBox(mesh.quads);
+    if (shape === null) {
       continue;
     }
     const slot = slotOf(mesh.paletteIndex);
-    const cells = cubesBySlot.get(slot) ?? [];
+    // Grouped by shape as well as filament: blocks of one shape sit on the grid
+    // the same way, which is what lets them be merged as whole cells.
+    const key = `${slot}|${shape.join(",")}`;
+    const group = boxed.get(key) ?? { slot, shape, cells: [] };
     for (let block = 0; block < mesh.blocks; block++) {
-      cells.push([
+      group.cells.push([
         Math.round((mesh.offsets[block * 3] as number) + model.size.width / 2),
         Math.round((mesh.offsets[block * 3 + 1] as number) + model.size.height / 2),
         Math.round((mesh.offsets[block * 3 + 2] as number) + model.size.depth / 2),
       ]);
     }
-    cubesBySlot.set(slot, cells);
+    boxed.set(key, group);
   }
 
-  for (const [slot, cells] of cubesBySlot) {
-    for (const box of mergeCubes(cells)) {
+  for (const { slot, shape, cells } of boxed.values()) {
+    // Only an axis the shape fills from end to end may be merged along. A dirt
+    // path fills its cell across but stops a sixteenth short of the top, and
+    // stacking two of them would close a gap that ought to be there.
+    const whole: [boolean, boolean, boolean] = [0, 1, 2].map(
+      (axis) =>
+        Math.abs(shape[axis] as number) < 1e-6 && Math.abs((shape[axis + 3] as number) - 1) < 1e-6,
+    ) as [boolean, boolean, boolean];
+
+    for (const box of mergeBoxes(cells, whole)) {
       const [x0, y0, z0, x1, y1, z1] = box;
       const corners = CORNERS.map((corner) =>
         place(
-          (corner[0] === 0 ? x0 : x1) - model.size.width / 2,
-          (corner[1] === 0 ? y0 : y1) - model.size.height / 2,
-          (corner[2] === 0 ? z0 : z1) - model.size.depth / 2,
+          (corner[0] === 0 ? x0 + (shape[0] as number) : x1 - 1 + (shape[3] as number)) - model.size.width / 2,
+          (corner[1] === 0 ? y0 + (shape[1] as number) : y1 - 1 + (shape[4] as number)) - model.size.height / 2,
+          (corner[2] === 0 ? z0 + (shape[2] as number) : z1 - 1 + (shape[5] as number)) - model.size.depth / 2,
         ),
       );
       (grouped[slot] as Solid[]).push(corners);
@@ -248,14 +263,14 @@ export function solidsBySlot(
         const side = face.map((corner) => corners[corner] as Point);
         const normal = normalOf(side);
         if (normal !== null) {
-          shelled.push({ slot, corners: side, normal, owner: `cube:${box.join(",")}`, blocker: true });
+          shelled.push({ slot, corners: side, normal, owner: `box:${box.join(",")}`, blocker: true });
         }
       }
     }
   }
 
   for (const mesh of model.meshes) {
-    if (isUnitCube(mesh.quads)) {
+    if (asSolidBox(mesh.quads) !== null) {
       // Printed as a box above; its faces would only duplicate the box's sides.
       continue;
     }
@@ -756,18 +771,39 @@ export function round(value: number): number {
  * swap safe; anything else -- a stair, a slab, a torch -- does not and keeps
  * its shell.
  */
-function isUnitCube(quads: Float32Array): boolean {
+function asSolidBox(quads: Float32Array): [number, number, number, number, number, number] | null {
   if (quads.length === 0) {
-    return false;
+    return null;
   }
-  const covered = [0, 0, 0, 0, 0, 0];
+
+  // The box the model is tested against is its own extent: if every face lies
+  // on that box and covers it, the model is that box's surface and nothing
+  // else.
+  const low = [1, 1, 1];
+  const high = [0, 0, 0];
+  for (let i = 0; i < quads.length; i += 3) {
+    for (let axis = 0; axis < 3; axis++) {
+      const value = quads[i + axis] as number;
+      low[axis] = Math.min(low[axis] as number, value);
+      high[axis] = Math.max(high[axis] as number, value);
+    }
+  }
+  for (let axis = 0; axis < 3; axis++) {
+    if ((high[axis] as number) - (low[axis] as number) < 1e-3) {
+      // Flat: a sheet, not a box.
+      return null;
+    }
+  }
+
+  // Rectangles seen on each of the six sides, in that side's own coordinates.
+  const sides: Tile[][] = [[], [], [], [], [], []];
 
   for (let face = 0; face < quads.length / 12; face++) {
     const at = face * 12;
     for (let i = at; i < at + 12; i++) {
       const value = quads[i] as number;
       if (value < -1e-6 || value > 1 + 1e-6) {
-        return false;
+        return null;
       }
     }
 
@@ -784,13 +820,13 @@ function isUnitCube(quads: Float32Array): boolean {
       if (!flat) {
         continue;
       }
-      if (Math.abs(first) < 1e-6) {
+      if (Math.abs(first - (low[axis] as number)) < 1e-6) {
         side = axis * 2;
-      } else if (Math.abs(first - 1) < 1e-6) {
+      } else if (Math.abs(first - (high[axis] as number)) < 1e-6) {
         side = axis * 2 + 1;
       } else {
-        // Flat, but somewhere inside the cube rather than on its surface.
-        return false;
+        // Flat, but somewhere inside the box rather than on its surface.
+        return null;
       }
 
       const [u, v] = axis === 0 ? [1, 2] : axis === 1 ? [0, 2] : [0, 1];
@@ -800,30 +836,90 @@ function isUnitCube(quads: Float32Array): boolean {
         us.push(quads[at + corner * 3 + u] as number);
         vs.push(quads[at + corner * 3 + v] as number);
       }
-      covered[side] =
-        (covered[side] as number) +
-        (Math.max(...us) - Math.min(...us)) * (Math.max(...vs) - Math.min(...vs));
+      (sides[side] as Tile[]).push({
+        u0: Math.min(...us),
+        v0: Math.min(...vs),
+        u1: Math.max(...us),
+        v1: Math.max(...vs),
+      });
     }
     if (side < 0) {
-      return false;
+      return null;
     }
   }
-  return covered.every((area) => Math.abs(area - 1) < 1e-3);
+
+  // The area each side covers, counted once however many faces lie on it. A
+  // grass block draws its sides twice -- the earth and the green over it -- and
+  // adding the two up would say the side was covered twice over and throw the
+  // block out of a swap it is perfectly safe for.
+  for (let axis = 0; axis < 3; axis++) {
+    const [u, v] = axis === 0 ? [1, 2] : axis === 1 ? [0, 2] : [0, 1];
+    const want =
+      ((high[u] as number) - (low[u] as number)) * ((high[v] as number) - (low[v] as number));
+    for (const side of [axis * 2, axis * 2 + 1]) {
+      if (Math.abs(unionArea(sides[side] as Tile[]) - want) > 1e-3) {
+        return null;
+      }
+    }
+  }
+  return [
+    low[0] as number,
+    low[1] as number,
+    low[2] as number,
+    high[0] as number,
+    high[1] as number,
+    high[2] as number,
+  ];
+}
+
+/**
+ * How much area a heap of rectangles covers between them, overlaps counted
+ * once.
+ *
+ * <p>Cut along every edge any of them brings and add up the cells at least one
+ * of them covers. Slow in principle and nothing here in practice: a block's
+ * side is a handful of rectangles.
+ */
+function unionArea(tiles: readonly Tile[]): number {
+  if (tiles.length === 0) {
+    return 0;
+  }
+  const us = [...new Set(tiles.flatMap((t) => [t.u0, t.u1]))].sort((a, b) => a - b);
+  const vs = [...new Set(tiles.flatMap((t) => [t.v0, t.v1]))].sort((a, b) => a - b);
+
+  let area = 0;
+  for (let i = 0; i + 1 < us.length; i++) {
+    for (let j = 0; j + 1 < vs.length; j++) {
+      const u0 = us[i] as number;
+      const u1 = us[i + 1] as number;
+      const v0 = vs[j] as number;
+      const v1 = vs[j + 1] as number;
+      const midU = (u0 + u1) / 2;
+      const midV = (v0 + v1) / 2;
+      if (tiles.some((t) => t.u0 <= midU && midU <= t.u1 && t.v0 <= midV && midV <= t.v1)) {
+        area += (u1 - u0) * (v1 - v0);
+      }
+    }
+  }
+  return area;
 }
 
 /**
  * Joins unit cubes into as few boxes as it can.
  *
  * <p>Greedy in three passes: a run along x, then as many whole runs stacked
- * along y as match it, then as many whole slabs along z. The same reason as for
+ * along z as match it, then as many whole slabs along y. The same reason as for
  * flat faces -- boxes that only touch are two bodies to a slicer, and it draws
  * a perimeter around each.
  *
  * @param cells block positions on the selection's own grid
+ * @param whole which axes the shape fills from end to end, and so may be joined
+ *              along; a slab joined upwards would fill the air above it
  * @return boxes as x0, y0, z0, x1, y1, z1 in the same grid
  */
-function mergeCubes(
+function mergeBoxes(
   cells: ReadonlyArray<readonly [number, number, number]>,
+  whole: readonly [boolean, boolean, boolean],
 ): Array<[number, number, number, number, number, number]> {
   const left = new Set(cells.map((cell) => cell.join(",")));
   const has = (x: number, y: number, z: number): boolean => left.has(`${x},${y},${z}`);
@@ -839,12 +935,12 @@ function mergeCubes(
     }
 
     let width = 1;
-    while (has(x + width, y, z)) {
+    while (whole[0] && has(x + width, y, z)) {
       width++;
     }
 
     let depth = 1;
-    grow: while (true) {
+    grow: while (whole[2]) {
       for (let i = 0; i < width; i++) {
         if (!has(x + i, y, z + depth)) {
           break grow;
@@ -854,7 +950,7 @@ function mergeCubes(
     }
 
     let height = 1;
-    stack: while (true) {
+    stack: while (whole[1]) {
       for (let i = 0; i < width; i++) {
         for (let j = 0; j < depth; j++) {
           if (!has(x + i, y + height, z + j)) {
