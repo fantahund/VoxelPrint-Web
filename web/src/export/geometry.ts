@@ -138,9 +138,11 @@ export function solidsBySlot(
     return Math.min(Math.max(assignment[id] ?? 0, 0), slotCount - 1);
   };
 
-  // With a shell, only the blocks that have no model of their own keep a box;
-  // those are the first stretch of the array, which is how the preview knows
-  // them too.
+  // A shell gives a box its six sides as walls like everything else, so a block
+  // the game draws by hand -- a chest, a statue -- comes out hollow rather than
+  // as a lump of plastic in the middle of a hollow build. Solid mode keeps them
+  // solid, which is what it is for.
+  const shelled: Facet[] = [];
   const boxCount = options.geometry === "shell" ? model.boxes : model.solids;
   for (let i = 0; i < boxCount; i++) {
     const slot = slotOf(model.paletteIndices[i] as number);
@@ -151,15 +153,30 @@ export function solidsBySlot(
     const sy = model.scales[i * 3 + 1] as number;
     const sz = model.scales[i * 3 + 2] as number;
 
-    (grouped[slot] as Solid[]).push(
-      CORNERS.map((corner) =>
-        place(
-          corner[0] === 0 ? cx - sx / 2 : cx + sx / 2,
-          corner[1] === 0 ? cy - sy / 2 : cy + sy / 2,
-          corner[2] === 0 ? cz - sz / 2 : cz + sz / 2,
-        ),
+    const box = CORNERS.map((corner) =>
+      place(
+        corner[0] === 0 ? cx - sx / 2 : cx + sx / 2,
+        corner[1] === 0 ? cy - sy / 2 : cy + sy / 2,
+        corner[2] === 0 ? cz - sz / 2 : cz + sz / 2,
       ),
     );
+
+    if (options.geometry !== "shell") {
+      (grouped[slot] as Solid[]).push(box);
+      continue;
+    }
+
+    // Named per box rather than per block, so the two boxes of a shape that has
+    // two cancel where they meet. A box is never a sheet with no thickness, so
+    // there is nothing here for that rule to protect.
+    const owner = `box:${i}`;
+    for (const face of FACES) {
+      const corners = face.map((corner) => box[corner] as Point);
+      const normal = normalOf(corners);
+      if (normal !== null) {
+        shelled.push({ slot, corners, normal, owner });
+      }
+    }
   }
 
   if (options.geometry !== "shell") {
@@ -190,10 +207,7 @@ export function solidsBySlot(
   //
   // A block is named by where it stands, which is unique: no two blocks share a
   // position, so faces with the same owner came from one model.
-  const surface = new Map<
-    string,
-    { slot: number; corners: Point[]; normal: Point; owner: string }
-  >();
+  const surface = new Map<string, Facet>();
   for (const mesh of model.meshes) {
     const slot = slotOf(mesh.paletteIndex);
     const faces = mesh.quads.length / 12;
@@ -243,7 +257,8 @@ export function solidsBySlot(
   }
 
   const wall = Math.max(options.wallMillimetres, TOO_THIN);
-  for (const { slot, corners, normal } of mergeCoplanar(hideBackToBack([...surface.values()]))) {
+  const faces = [...shelled, ...surface.values()];
+  for (const { slot, corners, normal } of mergeCoplanar(hideBackToBack(faces))) {
     (grouped[slot] as Solid[]).push(thicken(corners, normal, wall));
   }
   return grouped;
