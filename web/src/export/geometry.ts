@@ -143,6 +143,8 @@ export function solidsBySlot(
   // as a lump of plastic in the middle of a hollow build. Solid mode keeps them
   // solid, which is what it is for.
   const shelled: Facet[] = [];
+  /** The wall thickness in blocks, for the parts of a model measured that way. */
+  const wallInBlocks = Math.max(options.wallMillimetres, TOO_THIN) / scale;
   /** Solid boxes per filament, joined across shapes once they are all in. */
   const volumes: Point[][][] = Array.from({ length: slotCount }, () => []);
   const boxCount = options.geometry === "shell" ? model.boxes : model.solids;
@@ -294,13 +296,55 @@ export function solidsBySlot(
     const slot = slotOf(mesh.paletteIndex);
     const faces = mesh.quads.length / 12;
 
+    // What the block is not, it may still be made of: the boxes of its own
+    // model, printed solid, with only what is left over walled. Worked out once
+    // for the state and then placed at every block of it, because the geometry
+    // is block-local and identical at each.
+    const { boxes: parts, covers } = boxesOfQuads(mesh.quads);
+    const solidParts = joinLocalBoxes(parts, wallInBlocks);
+    const accounted = (face: number): boolean => {
+      const flat = tileOfQuad(mesh.quads, face);
+      if (flat === null) {
+        return false;
+      }
+      const under = covers.get(planeKey(flat.axis, flat.sign, flat.at));
+      return under !== undefined && area(uncovered(flat.tile, under)) <= SLIVER;
+    };
+    const consumed: boolean[] = [];
+    for (let face = 0; face < faces; face++) {
+      consumed.push(solidParts.length > 0 && accounted(face));
+    }
+
     for (let block = 0; block < mesh.blocks; block++) {
       const ox = mesh.offsets[block * 3] as number;
       const oy = mesh.offsets[block * 3 + 1] as number;
       const oz = mesh.offsets[block * 3 + 2] as number;
       const owner = `${ox},${oy},${oz}`;
 
+      for (const part of solidParts) {
+        const corners = CORNERS.map((corner) =>
+          place(
+            ox + (corner[0] === 0 ? (part[0] as number) : (part[3] as number)),
+            oy + (corner[1] === 0 ? (part[1] as number) : (part[4] as number)),
+            oz + (corner[2] === 0 ? (part[2] as number) : (part[5] as number)),
+          ),
+        );
+        (grouped[slot] as Solid[]).push(corners);
+        // Its sides still hide what presses against them, but print nothing of
+        // their own: they are inside the solid already.
+        for (const face of FACES) {
+          const side = face.map((corner) => corners[corner] as Point);
+          const normal = normalOf(side);
+          if (normal !== null) {
+            shelled.push({ slot, corners: side, normal, owner, blocker: true });
+          }
+        }
+      }
+
       for (let face = 0; face < faces; face++) {
+        if (consumed[face] === true) {
+          continue;
+        }
         const corners: Point[] = [];
         for (let corner = 0; corner < 4; corner++) {
           const at = face * 12 + corner * 3;
@@ -824,9 +868,6 @@ export function solidShapeOf(quads: Float32Array, shape: readonly Box[]): Box[] 
     }
   }
 
-  // Every side of every box, whether anything can see it or not. A face the
-  // model draws has to land on one of these.
-  const onSides = new Map<string, Tile[]>();
   // What the shape shows to the outside: each side of each box, less the parts
   // another box of the same shape is pressed against.
   const outside = new Map<string, Tile[]>();
@@ -863,10 +904,6 @@ export function solidShapeOf(quads: Float32Array, shape: readonly Box[]): Box[] 
           v1: other[v + 3] as number,
         }));
         const key = `${axis}|${round(at)}`;
-        const all = onSides.get(key) ?? [];
-        all.push(side);
-        onSides.set(key, all);
-
         const known = outside.get(key) ?? [];
         known.push(...uncovered(side, blockers));
         outside.set(key, known);
@@ -875,7 +912,7 @@ export function solidShapeOf(quads: Float32Array, shape: readonly Box[]): Box[] 
   }
 
   // What the model draws, in the same terms.
-  const drawn = new Map<string, Tile[]>();
+  const drawn = new Map<string, { axis: number; at: number; tiles: Tile[] }>();
   for (let face = 0; face < quads.length / 12; face++) {
     const at = face * 12;
     let placed = false;
@@ -899,8 +936,13 @@ export function solidShapeOf(quads: Float32Array, shape: readonly Box[]): Box[] 
         vs.push(quads[at + corner * 3 + v] as number);
       }
       const key = `${axis}|${round(first)}`;
-      const known = drawn.get(key) ?? [];
-      known.push({ u0: Math.min(...us), v0: Math.min(...vs), u1: Math.max(...us), v1: Math.max(...vs) });
+      const known = drawn.get(key) ?? { axis, at: first, tiles: [] };
+      known.tiles.push({
+        u0: Math.min(...us),
+        v0: Math.min(...vs),
+        u1: Math.max(...us),
+        v1: Math.max(...vs),
+      });
       drawn.set(key, known);
       placed = true;
     }
@@ -910,29 +952,48 @@ export function solidShapeOf(quads: Float32Array, shape: readonly Box[]): Box[] 
     }
   }
 
-  // Two conditions, and which way round they go matters. The model may draw
-  // more than the shape shows: Minecraft culls a face against a neighbouring
-  // block, never against another part of the same model, so a stair draws the
-  // whole top of its lower slab even though its step stands on half of it.
-  // Those extra faces are inside the solid and no reason to refuse.
+  // Two conditions, and which way round they go matters. Neither is about the
+  // faces lining up with the sides of the boxes, which was the first attempt
+  // and was wrong in both directions.
   //
-  //   - everything the model draws has to lie on a side of some box, or the
-  //     model is not made of these boxes at all;
+  //   - nothing the model draws may lie outside the boxes, or printing the
+  //     boxes would not be printing this model;
   //   - everything the shape shows has to be drawn, or the model is smaller
   //     than the boxes and printing them would make it bigger than it looks.
-  for (const [key, tiles] of drawn) {
-    const sides = onSides.get(key);
-    if (sides === undefined) {
-      return null;
-    }
+  //
+  // A face inside the boxes breaks neither and is no reason to refuse. There
+  // are a great many of them, because Minecraft culls a face against a
+  // neighbouring block and never against another part of the same model: a
+  // stair draws the whole top of its lower slab even though its step stands on
+  // half of it. Demanding that every drawn face sit on a side of a box turned
+  // every upside down stair into a shell -- its slab is the full height of the
+  // block, so the face where its step begins is inside the solid and on the
+  // side of nothing. Measured on a village: thirteen of them.
+  //
+  // The second condition is what keeps this honest. A cauldron's shape is the
+  // whole cube and its model is a basin; the basin's walls are all inside the
+  // cube, so the first condition passes, and the second refuses it because the
+  // cube's top is drawn only as a rim.
+  for (const { axis, at, tiles } of drawn.values()) {
+    const [u, v] = axis === 0 ? [1, 2] : axis === 1 ? [0, 2] : [0, 1];
+    // Every box the plane passes through, including the ones it only touches:
+    // a face on a box's side and a face buried in its middle are both inside.
+    const inside = shape
+      .filter((box) => (box[axis] as number) - 1e-6 <= at && at <= (box[axis + 3] as number) + 1e-6)
+      .map((box) => ({
+        u0: box[u] as number,
+        v0: box[v] as number,
+        u1: box[u + 3] as number,
+        v1: box[v + 3] as number,
+      }));
     for (const tile of tiles) {
-      if (area(uncovered(tile, sides)) > SLIVER) {
+      if (area(uncovered(tile, inside)) > SLIVER) {
         return null;
       }
     }
   }
   for (const [key, tiles] of outside) {
-    const shown = drawn.get(key) ?? [];
+    const shown = drawn.get(key)?.tiles ?? [];
     for (const tile of tiles) {
       if (area(uncovered(tile, shown)) > SLIVER) {
         return null;
@@ -940,6 +1001,166 @@ export function solidShapeOf(quads: Float32Array, shape: readonly Box[]): Box[] 
     }
   }
   return shape.map((box) => [...box] as Box);
+}
+
+/**
+ * The closed boxes a model is built out of, in block-local coordinates.
+ *
+ * <p>{@link solidShapeOf} asks whether a whole block is its shape, which is the
+ * best case and the common one. This is for everything else: a chest is a base
+ * and a lid, a fence is a post and two arms, a door is one slab. Each of those
+ * is a closed box the game drew six sides of, and printing it as a box rather
+ * than as six walls is the difference between a lump the slicer can fill and a
+ * hollow shell it cannot. Measured on a village before this existed: a chest
+ * printed as a 1.2 mm shell with nothing inside it, which is what the ask "the
+ * chest is still hollow inside" was about.
+ *
+ * <p>Faces arrive cut into patches, because a face follows its texture -- a
+ * stair's side comes over as a dozen strips. So the patches are joined back
+ * into whole rectangles first, per plane and per direction, and the boxes are
+ * looked for among those. Joining before looking also catches two elements that
+ * sit side by side: their shared faces cancel into one rectangle and the pair
+ * is found as the single box it is.
+ *
+ * <p>Nothing is guessed. A box is only taken when all six of its sides are
+ * there as whole rectangles facing outwards, which is what a Minecraft element
+ * always is and what a sheet, a tilted face or a rotated element never is.
+ * Those keep their walls exactly as before.
+ *
+ * @return the boxes, and the rectangles their sides cover so the caller can
+ *         tell which faces they have already accounted for
+ */
+export function boxesOfQuads(quads: Float32Array): {
+  boxes: Box[];
+  covers: Map<string, Tile[]>;
+} {
+  const planes = new Map<string, { axis: number; sign: number; at: number; tiles: Tile[] }>();
+
+  for (let face = 0; face < quads.length / 12; face++) {
+    const flat = tileOfQuad(quads, face);
+    if (flat === null) {
+      continue;
+    }
+    const key = planeKey(flat.axis, flat.sign, flat.at);
+    const plane = planes.get(key);
+    if (plane === undefined) {
+      planes.set(key, { axis: flat.axis, sign: flat.sign, at: flat.at, tiles: [flat.tile] });
+    } else {
+      plane.tiles.push(flat.tile);
+    }
+  }
+
+  /** Whole rectangles per plane, and which of them are still free. */
+  const whole = new Map<string, { axis: number; sign: number; at: number; tiles: Tile[] }>();
+  for (const [key, plane] of planes) {
+    whole.set(key, { ...plane, tiles: joinTiles(plane.tiles) });
+  }
+
+  const taken = new Set<string>();
+  const nameOf = (key: string, tile: Tile): string => `${key}|${tile.u0},${tile.v0},${tile.u1},${tile.v1}`;
+  const find = (axis: number, sign: number, at: number, tile: Tile): Tile | null => {
+    const plane = whole.get(planeKey(axis, sign, at));
+    if (plane === undefined) {
+      return null;
+    }
+    const match = plane.tiles.find(
+      (other) =>
+        other.u0 === tile.u0 && other.v0 === tile.v0 && other.u1 === tile.u1 && other.v1 === tile.v1,
+    );
+    if (match === undefined || taken.has(nameOf(planeKey(axis, sign, at), match))) {
+      return null;
+    }
+    return match;
+  };
+
+  // Every height a lid could be at, so the nearest one is tried first: two
+  // boxes standing on the same footprint would otherwise be read as one tall
+  // box with the lower lid buried in it.
+  const lids = [...whole.values()]
+    .filter((plane) => plane.axis === 1 && plane.sign === 1)
+    .map((plane) => plane.at)
+    .sort((a, b) => a - b);
+
+  const boxes: Box[] = [];
+  const covers = new Map<string, Tile[]>();
+  const cover = (axis: number, sign: number, at: number, tile: Tile): void => {
+    const key = planeKey(axis, sign, at);
+    taken.add(nameOf(key, tile));
+    const known = covers.get(key);
+    if (known === undefined) {
+      covers.set(key, [tile]);
+    } else {
+      known.push(tile);
+    }
+  };
+
+  for (const plane of whole.values()) {
+    if (plane.axis !== 1 || plane.sign !== -1) {
+      continue;
+    }
+    for (const floor of plane.tiles) {
+      if (taken.has(nameOf(planeKey(1, -1, plane.at), floor))) {
+        continue;
+      }
+      const x0 = floor.u0;
+      const z0 = floor.v0;
+      const x1 = floor.u1;
+      const z1 = floor.v1;
+      const y0 = plane.at;
+
+      for (const y1 of lids) {
+        if (y1 <= y0) {
+          continue;
+        }
+        const sides: Array<[number, number, number, Tile]> = [
+          [1, 1, y1, { u0: x0, v0: z0, u1: x1, v1: z1 }],
+          [0, -1, x0, { u0: y0, v0: z0, u1: y1, v1: z1 }],
+          [0, 1, x1, { u0: y0, v0: z0, u1: y1, v1: z1 }],
+          [2, -1, z0, { u0: x0, v0: y0, u1: x1, v1: y1 }],
+          [2, 1, z1, { u0: x0, v0: y0, u1: x1, v1: y1 }],
+        ];
+        const found = sides.map(([axis, sign, at, tile]) => find(axis, sign, at, tile));
+        if (found.some((tile) => tile === null)) {
+          continue;
+        }
+        boxes.push([x0, y0, z0, x1, y1, z1]);
+        cover(1, -1, y0, floor);
+        sides.forEach(([axis, sign, at], i) => cover(axis, sign, at, found[i] as Tile));
+        break;
+      }
+    }
+  }
+  return { boxes, covers };
+}
+
+function planeKey(axis: number, sign: number, at: number): string {
+  return `${axis}|${sign}|${at}`;
+}
+
+/**
+ * Reads one quad of a model as a rectangle in an axis aligned plane, or null.
+ *
+ * <p>The same question {@link asTile} answers for a face that has already been
+ * placed in the build, asked of the raw block-local numbers instead.
+ */
+function tileOfQuad(
+  quads: Float32Array,
+  face: number,
+): { axis: number; sign: number; at: number; tile: Tile } | null {
+  const start = face * 12;
+  const corners: Point[] = [];
+  for (let corner = 0; corner < 4; corner++) {
+    corners.push([
+      quads[start + corner * 3] as number,
+      quads[start + corner * 3 + 1] as number,
+      quads[start + corner * 3 + 2] as number,
+    ]);
+  }
+  const normal = normalOf(corners);
+  if (normal === null) {
+    return null;
+  }
+  return asTile({ slot: 0, corners, normal, owner: "" });
 }
 
 /**
@@ -986,38 +1207,6 @@ export function shapesPerEntry(model: VoxelModel): Map<number, Box[]> {
     }
   }
   return shapes;
-}
-
-/**
- * How much area a heap of rectangles covers between them, overlaps counted
- * once.
- *
- * <p>Cut along every edge any of them brings and add up the cells at least one
- * of them covers. Slow in principle and nothing here in practice: a block's
- * side is a handful of rectangles.
- */
-function unionArea(tiles: readonly Tile[]): number {
-  if (tiles.length === 0) {
-    return 0;
-  }
-  const us = [...new Set(tiles.flatMap((t) => [t.u0, t.u1]))].sort((a, b) => a - b);
-  const vs = [...new Set(tiles.flatMap((t) => [t.v0, t.v1]))].sort((a, b) => a - b);
-
-  let area = 0;
-  for (let i = 0; i + 1 < us.length; i++) {
-    for (let j = 0; j + 1 < vs.length; j++) {
-      const u0 = us[i] as number;
-      const u1 = us[i + 1] as number;
-      const v0 = vs[j] as number;
-      const v1 = vs[j + 1] as number;
-      const midU = (u0 + u1) / 2;
-      const midV = (v0 + v1) / 2;
-      if (tiles.some((t) => t.u0 <= midU && midU <= t.u1 && t.v0 <= midV && midV <= t.v1)) {
-        area += (u1 - u0) * (v1 - v0);
-      }
-    }
-  }
-  return area;
 }
 
 /**
@@ -1087,6 +1276,68 @@ function mergeBoxes(
     boxes.push([x, y, z, x + width, y + height, z + depth]);
   }
   return boxes;
+}
+
+/**
+ * Joins the boxes of one model where they overlap or touch.
+ *
+ * <p>A chest's base and lid overlap by a sixteenth, a fence's arms run into its
+ * post. Left as they are, the slicer sees several bodies and draws a perimeter
+ * around each where they meet -- walls inside a solid, which is the thing this
+ * whole file is trying to be rid of. Worked out once per block state, in the
+ * block's own coordinates, and then placed at every block of it.
+ *
+ * <p>A box thinner than a wall is grown to a wall first. The wall setting is
+ * the thinnest thing the printer is being asked to make, and it applied to
+ * these boxes before they were boxes: a sign's board is a sixteenth and a bit
+ * thick, and the two walls its faces used to become each reached a full wall
+ * inwards, met in the middle and came out the other side. That made the board
+ * nearly twice as thick as it is. Growing to exactly one wall keeps the
+ * promise and drops the overshoot.
+ *
+ * @param thinnest the wall thickness, in blocks
+ */
+function joinLocalBoxes(boxes: readonly Box[], thinnest: number): Box[] {
+  const grown = boxes.map((box) => {
+    const out = [...box] as Box;
+    for (let axis = 0; axis < 3; axis++) {
+      const short = thinnest - ((box[axis + 3] as number) - (box[axis] as number));
+      if (short > 0) {
+        out[axis] = (box[axis] as number) - short / 2;
+        out[axis + 3] = (box[axis + 3] as number) + short / 2;
+      }
+    }
+    return out;
+  });
+
+  if (grown.length < 2) {
+    return grown;
+  }
+
+  const joined = joinSolids(
+    grown.map((box) =>
+      CORNERS.map(
+        (corner) =>
+          [
+            corner[0] === 0 ? box[0] : box[3],
+            corner[1] === 0 ? box[1] : box[4],
+            corner[2] === 0 ? box[2] : box[5],
+          ] as unknown as Point,
+      ),
+    ),
+  );
+
+  return joined.map((solid) => {
+    const low = [Infinity, Infinity, Infinity];
+    const high = [-Infinity, -Infinity, -Infinity];
+    for (const corner of solid) {
+      for (let axis = 0; axis < 3; axis++) {
+        low[axis] = Math.min(low[axis] as number, corner[axis] as number);
+        high[axis] = Math.max(high[axis] as number, corner[axis] as number);
+      }
+    }
+    return [low[0], low[1], low[2], high[0], high[1], high[2]] as Box;
+  });
 }
 
 /** How much a heap of rectangles adds up to, overlaps counted twice. */
