@@ -222,12 +222,18 @@ export function solidsBySlot(
   // for, so a shell is filled with perimeters and never with infill. Measured
   // on two builds, 44 % and 22 % of the drawn blocks are such cubes.
   const shapes = shapesPerEntry(model);
+  // Worked out once per state and read twice: here, and again below to decide
+  // which meshes are left to shell.
+  const asShape = new Map<number, Box[] | null>();
+  for (const mesh of model.meshes) {
+    asShape.set(mesh.paletteIndex, solidShapeOf(mesh.quads, shapes.get(mesh.paletteIndex) ?? []));
+  }
   const boxed = new Map<
     string,
     { slot: number; shape: Box[]; cells: Array<[number, number, number]> }
   >();
   for (const mesh of model.meshes) {
-    const shape = solidShapeOf(mesh.quads, shapes.get(mesh.paletteIndex) ?? []);
+    const shape = asShape.get(mesh.paletteIndex) ?? null;
     if (shape === null) {
       continue;
     }
@@ -289,7 +295,7 @@ export function solidsBySlot(
   }
 
   for (const mesh of model.meshes) {
-    if (solidShapeOf(mesh.quads, shapes.get(mesh.paletteIndex) ?? []) !== null) {
+    if (asShape.get(mesh.paletteIndex) != null) {
       // Printed as a box above; its faces would only duplicate the box's sides.
       continue;
     }
