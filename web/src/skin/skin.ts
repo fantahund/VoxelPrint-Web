@@ -63,8 +63,14 @@ export function allLayers(how: SkinLayers): Record<Layer, SkinLayers> {
   return Object.fromEntries(LAYERS.map((layer) => [layer, how])) as Record<Layer, SkinLayers>;
 }
 
-/** The thinnest and thickest a standing off layer may be, in texels. */
-export const THINNEST = 0.125;
+/**
+ * What a standing off layer's thickness may be set to, in texels.
+ *
+ * <p>Nothing up to a whole cell. At nothing there is no layer to print, and a
+ * part set to stand off shows none -- which is a state worth being able to
+ * reach by sliding rather than only by switching every part back.
+ */
+export const THINNEST = 0;
 export const THICKEST = 1;
 
 export interface SkinOptions {
@@ -414,6 +420,8 @@ function clamp(value: number, limit: number): number {
 export function buildSkinVoxels(skin: Skin, options: SkinOptions): SkinVoxels {
   const parts = partsOf(skin, options.model);
   const thickness = Math.min(Math.max(options.thickness, THINNEST), THICKEST);
+  // A layer with no thickness is a layer with nothing to print. Said here once
+  // rather than left to make boxes with no volume in them further down.
 
   /** What is in each cell, keyed by "x,y,z"; the first one to claim it wins. */
   const cells = new Map<string, Cell>();
@@ -484,7 +492,7 @@ export function buildSkinVoxels(skin: Skin, options: SkinOptions): SkinVoxels {
 
   // The layers that stand off, each on the body it belongs to.
   for (const part of parts) {
-    if (part.outer === null || options.layers[part.layer] !== "solid") {
+    if (part.outer === null || options.layers[part.layer] !== "solid" || thickness <= 0) {
       continue;
     }
     const outer = part.outer;

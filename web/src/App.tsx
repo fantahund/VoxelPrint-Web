@@ -12,6 +12,7 @@ import {
   IconButton,
   Select,
   Separator,
+  Slider,
   Table,
   Text,
   TextField,
@@ -709,6 +710,21 @@ function SkinFigure({
   onThickness: (next: number) => void;
 }): React.ReactElement {
   const standing = LAYERS.some((layer) => present.has(layer) && layers[layer] === "solid");
+  /**
+   * The thickness as it is being typed, which is not always a number yet.
+   *
+   * <p>Followed back when it is changed from outside -- by the slider -- but
+   * not while it agrees with what is typed, so "0.50" is not rewritten to
+   * "0.5" under the cursor.
+   */
+  const [typed, setTyped] = useState(String(thickness));
+  useEffect(() => {
+    if (Number(typed) !== thickness) {
+      setTyped(String(thickness));
+    }
+    // On the number, not on what is typed: typing is the other direction, and
+    // following it back here would fight the cursor.
+  }, [thickness, typed]);
   // Short labels: six rows of three buttons and a part name have to fit a side
   // column, and "Right trouser leg" is not a short part name.
   const choices: ReadonlyArray<{ how: SkinLayers; label: string }> = [
@@ -721,23 +737,9 @@ function SkinFigure({
     <Panel title="The figure" hint="Every one of these changes the shape, so the preview is built again.">
       <Flex direction="column" gap="3">
         <Box>
-          <Flex align="baseline" justify="between" mb="1" gap="2">
-            <Text as="div" size="1" weight="medium">
-              Second layer
-            </Text>
-            <Flex gap="2">
-              {choices.map(({ how, label }) => (
-                <Button
-                  key={how}
-                  size="1"
-                  variant="ghost"
-                  onClick={() => onLayers(allLayers(how))}
-                >
-                  All {label === "3D" ? "3D" : label.toLowerCase()}
-                </Button>
-              ))}
-            </Flex>
-          </Flex>
+          <Text as="div" size="1" weight="medium" mb="1">
+            Second layer
+          </Text>
 
           <Flex direction="column" gap="1">
             {LAYERS.map((layer) => {
@@ -765,6 +767,24 @@ function SkinFigure({
             })}
           </Flex>
 
+          <Flex align="center" justify="between" gap="2" mt="2">
+            <Text size="1" color="gray">
+              Every layer
+            </Text>
+            <Flex gap="1">
+              {choices.map(({ how, label }) => (
+                <Button
+                  key={how}
+                  size="1"
+                  variant="outline"
+                  onClick={() => onLayers(allLayers(how))}
+                >
+                  {label}
+                </Button>
+              ))}
+            </Flex>
+          </Flex>
+
           <Text as="p" size="1" color="gray" mt="1">
             Flat is what the game draws: the layer goes onto the body where it is
             opaque, and the figure stays six boxes. 3D is what the 3D Skin Layers
@@ -783,32 +803,50 @@ function SkinFigure({
             <Text as="div" size="1" weight="medium" mb="1">
               Layer thickness
             </Text>
-            <TextField.Root
-              size="1"
-              type="number"
-              min={THINNEST}
-              max={THICKEST}
-              step={0.125}
-              value={String(thickness)}
-              aria-label="Layer thickness in texels"
-              onChange={(event) => {
-                const next = Number(event.target.value);
-                if (Number.isFinite(next) && next > 0) {
-                  onThickness(Math.min(Math.max(next, THINNEST), THICKEST));
-                }
-              }}
-            >
-              <TextField.Slot side="right">
-                <Text size="1" color="gray">
-                  texels
-                </Text>
-              </TextField.Slot>
-            </TextField.Root>
+            <Flex direction="column" gap="2">
+              <TextField.Root
+                size="1"
+                inputMode="decimal"
+                value={typed}
+                aria-label="Layer thickness in texels"
+                onChange={(event) => {
+                  // The typed text is kept as typed. Clamping every keystroke
+                  // is what made this unusable: emptying the field to start
+                  // again, or typing the nought of "0.25", both read as a
+                  // number out of range and were thrown away as they were
+                  // typed.
+                  const raw = event.target.value;
+                  setTyped(raw);
+                  const next = Number(raw);
+                  if (raw.trim() !== "" && Number.isFinite(next) && next >= THINNEST && next <= THICKEST) {
+                    onThickness(next);
+                  }
+                }}
+                onBlur={() => setTyped(String(thickness))}
+              >
+                <TextField.Slot side="right">
+                  <Text size="1" color="gray">
+                    texels
+                  </Text>
+                </TextField.Slot>
+              </TextField.Root>
+
+              <Slider
+                size="1"
+                min={THINNEST}
+                max={THICKEST}
+                step={0.05}
+                value={[thickness]}
+                aria-label="Layer thickness"
+                onValueChange={([next]) => onThickness(next ?? thickness)}
+              />
+            </Flex>
             <Text as="p" size="1" color="gray" mt="1">
               A whole texel is as thick as the body's own voxels, which on a head
-              eight texels across is a quarter again as wide. The layer sits
-              against the body whatever it is set to, so a thin one is a thin
-              shell on the skin rather than a slab floating off it.
+              eight texels across is a quarter again as wide; nothing at all
+              leaves the layer off. The layer sits against the body whatever it
+              is set to, so a thin one is a thin shell on the skin rather than a
+              slab floating off it.
             </Text>
           </Box>
         )}

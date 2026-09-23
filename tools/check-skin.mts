@@ -328,6 +328,23 @@ const ok = (message: string): void => console.log("  ok   " + message);
   } else {
     fail(`a whole texel gave ${whole === null ? "nothing" : whole.map((b) => b.join(",")).join(" | ")}`);
   }
+
+  // No thickness at all is no layer, rather than boxes with nothing in them.
+  const none = figure("classic", "off", false, 0, { hat: "solid" });
+  const off = figure("classic", "off");
+  const flat = (f: { width: number; height: number; depth: number }): string =>
+    `${f.width}x${f.height}x${f.depth}`;
+  let empty = 0;
+  for (const shape of none.built.structure.shapes ?? []) {
+    for (const box of shape) {
+      if (box[3] - box[0] <= 0 || box[4] - box[1] <= 0 || box[5] - box[2] <= 0) empty++;
+    }
+  }
+  if (empty === 0 && flat(none) === flat(off)) {
+    ok(`a layer of no thickness leaves no boxes with nothing in them: ${flat(none)}`);
+  } else {
+    fail(`no thickness gave ${flat(none)} against ${flat(off)}, with ${empty} empty boxes`);
+  }
 }
 
 console.log(problems === 0 ? "\nALLE PRUEFUNGEN BESTANDEN" : `\n${problems} PROBLEME`);
