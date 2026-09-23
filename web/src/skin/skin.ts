@@ -497,9 +497,8 @@ export function buildSkinVoxels(skin: Skin, options: SkinOptions): SkinVoxels {
     }
     const outer = part.outer;
     surface(part, 1, (sides, px, py, pz) => {
-      // A cell of the grown box may be on more than one of its sides, and then
-      // it carries a slab for each: an edge of a hat is an L, not a gap.
-      const drawn: Side[] = [];
+      // Any one of the sides being drawn puts a cell here, and the first of
+      // them gives it its colour.
       let colour: number | null = null;
       for (const side of sides) {
         const [u, v] = texelOf(
@@ -511,11 +510,15 @@ export function buildSkinVoxels(skin: Skin, options: SkinOptions): SkinVoxels {
           clamp(pz - 1, part.d - 1),
         );
         if (alphaAt(skin, u, v) >= OPAQUE) {
-          drawn.push(side);
           colour ??= colourAt(skin, u, v);
         }
       }
-      return colour === null ? null : { colour, sides: drawn };
+      // The shape, though, is cut by every side the cell is on, drawn or not.
+      // The body ends at each of them whether its layer is painted there or
+      // not, and a slab that ignores the ones that are not runs a whole cell
+      // past where the body stops: a hat drawn down the sides of a head but not
+      // across its back leaves a tab standing out behind it.
+      return colour === null ? null : { colour, sides };
     });
   }
 

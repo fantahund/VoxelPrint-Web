@@ -329,6 +329,46 @@ const ok = (message: string): void => console.log("  ok   " + message);
     fail(`a whole texel gave ${whole === null ? "nothing" : whole.map((b) => b.join(",")).join(" | ")}`);
   }
 
+  // A side of the box with nothing drawn on it still cuts the cells along its
+  // edge. Without that, a hat drawn down the sides of a head but not across its
+  // back leaves a tab standing a whole cell out behind the head.
+  {
+    const pixels = coded();
+    // The hat: opaque on its right side only, at (32,8) to (40,16).
+    for (let v = 0; v < 16; v++) {
+      for (let u = 32; u < 64; u++) {
+        pixels[(v * 64 + u) * 4 + 3] = u >= 32 && u < 40 && v >= 8 && v < 16 ? 255 : 0;
+      }
+    }
+    const built = buildSkinVoxels(readSkin(pixels, 64, 64), {
+      model: "classic",
+      layers: { ...allLayers("off"), hat: "solid" },
+      thickness: 0.25,
+    });
+    const t = built.structure;
+    // Swept rather than pointed at, so the check does not depend on working out
+    // where the grid's corner ended up: every cell of the layer that sits at
+    // the front or the back of the figure has to be cut there, because that is
+    // where the head stops.
+    let cells = 0;
+    let uncut = 0;
+    for (let i = 0; i < built.indices.length; i++) {
+      const entry = built.indices[i]!;
+      if (entry === 0 || !(t.palette[entry] ?? "").includes("layer=")) continue;
+      const z = Math.floor(i / t.width) % t.depth;
+      if (z !== 0 && z !== t.depth - 1) continue;
+      cells++;
+      const box = t.shapes![entry]![0]!;
+      const cut = z === 0 ? Math.abs(box[2] - 0.75) < 1e-9 : Math.abs(box[5] - 0.25) < 1e-9;
+      if (!cut) uncut++;
+    }
+    if (cells > 0 && uncut === 0) {
+      ok(`a side layer is cut where the head stops: ${cells} cells at the front and back, none standing out`);
+    } else {
+      fail(`${uncut} of ${cells} layer cells at the front or back run the whole depth of their own`);
+    }
+  }
+
   // No thickness at all is no layer, rather than boxes with nothing in them.
   const none = figure("classic", "off", false, 0, { hat: "solid" });
   const off = figure("classic", "off");
