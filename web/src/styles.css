@@ -246,3 +246,9 @@ body {
   gap: 0.4rem;
   cursor: pointer;
 }
+
+/* The skin drop sits under a name field rather than filling the screen, so it
+   is the same target in a smaller frame. */
+.dropzone .target.thin {
+  padding: 1.25rem 1rem;
+}

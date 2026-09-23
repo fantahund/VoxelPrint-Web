@@ -18,7 +18,22 @@ import {
   Theme,
   Tooltip,
 } from "@radix-ui/themes";
-import { fetchIndices, fetchModels, fetchProject, savePrinting, uploadProject } from "./api";
+import {
+  fetchIndices,
+  fetchModels,
+  fetchProject,
+  fetchSkinByName,
+  savePrinting,
+  uploadProject,
+} from "./api";
+import { skinFromBase64, skinFromFile } from "./skin/load";
+import {
+  buildSkinVoxels,
+  slimBySkin,
+  type PlayerModel,
+  type Skin,
+  type SkinLayers,
+} from "./skin/skin";
 import {
   MAX_SLOTS,
   SLOT_COUNTS,
@@ -428,13 +443,26 @@ function Download({
   slots,
   assignment,
   name,
+  startingSize,
+  unit,
 }: {
   model: VoxelModel;
   slots: readonly FilamentSlot[];
   assignment: Readonly<Record<string, number>>;
   name: string;
+  /**
+   * How large one cell starts out, in millimetres.
+   *
+   * <p>A block is a block and ten of them a centimetre is a sensible village.
+   * A skin's cell is one texel of a sixty-four pixel texture, and a figure
+   * thirty-two texels tall at ten millimetres a texel would be a third of a
+   * metre; two is a figure that fits on a plate.
+   */
+  startingSize: number;
+  /** What one cell is called, which is not a block when it is a texel. */
+  unit: string;
 }): React.ReactElement {
-  const [millimetres, setMillimetres] = useState(10);
+  const [millimetres, setMillimetres] = useState(startingSize);
   const [geometry, setGeometry] = useState<Geometry>("shell");
   const [wall, setWall] = useState(1.2);
   /**
@@ -530,7 +558,7 @@ function Download({
         <Flex gap="3" wrap="wrap">
           <Box style={{ flex: 1, minWidth: "7rem" }}>
             <Text as="div" size="1" weight="medium" mb="1">
-              Block size
+              {unit} size
             </Text>
             <TextField.Root
               size="1"
@@ -538,7 +566,7 @@ function Download({
               min={1}
               max={200}
               value={String(millimetres)}
-              aria-label="Millimetres per block"
+              aria-label={`Millimetres per ${unit.toLowerCase()}`}
               onChange={(event) => {
                 const next = Number(event.target.value);
                 if (Number.isFinite(next) && next >= 1) {
@@ -639,6 +667,87 @@ function Download({
             <Callout.Text>{failure}</Callout.Text>
           </Callout.Root>
         )}
+      </Flex>
+    </Panel>
+  );
+}
+
+/**
+ * What the figure is made of, for a skin.
+ *
+ * <p>Two questions, and only one of them is really a choice. The arms are a
+ * fact about the skin that the file does not state, so it is guessed and left
+ * where it can be corrected. The second layer is the choice: painted on, which
+ * is what the game draws, or standing off the body, which is what the 3D Skin
+ * Layers mod draws and what most people picture when they picture a skin.
+ */
+function SkinFigure({
+  model,
+  onModel,
+  layers,
+  onLayers,
+}: {
+  model: PlayerModel;
+  onModel: (next: PlayerModel) => void;
+  layers: SkinLayers;
+  onLayers: (next: SkinLayers) => void;
+}): React.ReactElement {
+  return (
+    <Panel title="The figure" hint="Both change the shape, so the preview is built again.">
+      <Flex direction="column" gap="3">
+        <Box>
+          <Text as="div" size="1" weight="medium" mb="1">
+            Second layer
+          </Text>
+          <Flex gap="2" wrap="wrap">
+            <Button
+              size="1"
+              variant={layers === "flat" ? "solid" : "soft"}
+              onClick={() => onLayers("flat")}
+            >
+              Painted on
+            </Button>
+            <Button
+              size="1"
+              variant={layers === "solid" ? "solid" : "soft"}
+              onClick={() => onLayers("solid")}
+            >
+              Standing off
+            </Button>
+          </Flex>
+          <Text as="p" size="1" color="gray" mt="1">
+            {layers === "flat"
+              ? "Six plain boxes, with the hat, the jacket and the sleeves painted onto them wherever they are opaque. What the game itself draws."
+              : "The second layer as a layer of its own, a texel outside the body and only where its texture is opaque. What the 3D Skin Layers mod draws: hair sticks out, a hood stands off the head, a jacket has a hem."}
+          </Text>
+        </Box>
+
+        <Box>
+          <Text as="div" size="1" weight="medium" mb="1">
+            Arms
+          </Text>
+          <Flex gap="2" wrap="wrap">
+            <Button
+              size="1"
+              variant={model === "classic" ? "solid" : "soft"}
+              onClick={() => onModel("classic")}
+            >
+              Classic
+            </Button>
+            <Button
+              size="1"
+              variant={model === "slim" ? "solid" : "soft"}
+              onClick={() => onModel("slim")}
+            >
+              Slim
+            </Button>
+          </Flex>
+          <Text as="p" size="1" color="gray" mt="1">
+            Four texels wide, or three. Guessed from the skin, which gives itself
+            away by leaving the fourth column of the arm transparent when it is
+            drawn slim.
+          </Text>
+        </Box>
       </Flex>
     </Panel>
   );
@@ -763,6 +872,18 @@ function BlockMenu({
 
 export default function App(): React.ReactElement {
   const [project, setProject] = useState<Project | null>(null);
+  /**
+   * A skin, when that is what is open instead of a build.
+   *
+   * <p>Never a project: a skin is somebody's texture, read in the browser and
+   * printed from there, and there is nothing about it worth keeping on a
+   * server. The two are mutually exclusive, and everything past the model they
+   * produce treats them alike.
+   */
+  const [skin, setSkin] = useState<{ name: string; skin: Skin } | null>(null);
+  const [playerModel, setPlayerModel] = useState<PlayerModel>("classic");
+  const [skinLayers, setSkinLayers] = useState<SkinLayers>("solid");
+  const [playerName, setPlayerName] = useState("");
   const [model, setModel] = useState<VoxelModel | null>(null);
   /** Whether the preview shows the build or the print. */
   const [colourMode, setColourMode] = useState<"filament" | "minecraft">("filament");
@@ -802,6 +923,8 @@ export default function App(): React.ReactElement {
     structure: StructureInfo;
     indices: Uint32Array;
     models: BlockModels | null;
+    /** Colours the source knows outright, which is what a skin's palette is. */
+    colours?: readonly number[];
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   /**
@@ -817,12 +940,14 @@ export default function App(): React.ReactElement {
   );
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [skinDragging, setSkinDragging] = useState(false);
   /** Guards the save effect until the first plan is in place. */
   const [loadedPlan, setLoadedPlan] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   /** Puts the project in the address bar, so a reload keeps what is on screen. */
   const remember = useCallback((next: Project) => {
+    setSkin(null);
     setProject(next);
     const url = new URL(window.location.href);
     url.searchParams.set("project", next.id);
@@ -847,6 +972,98 @@ export default function App(): React.ReactElement {
     },
     [remember],
   );
+
+  /**
+   * Takes a skin, from wherever it came from.
+   *
+   * <p>The model it is drawn for is guessed from the skin itself where nothing
+   * else says: a slim skin leaves the fourth column of the classic arm
+   * transparent, because the game never reads it. Overridable afterwards, since
+   * a guess about somebody's arms should not be the last word.
+   */
+  const takeSkin = useCallback((name: string, loaded: Skin, model?: PlayerModel) => {
+    setProject(null);
+    setError(null);
+    setPlayerModel(model ?? (slimBySkin(loaded) ? "slim" : "classic"));
+    setSkin({ name, skin: loaded });
+    const url = new URL(window.location.href);
+    url.searchParams.delete("project");
+    window.history.replaceState(null, "", url);
+  }, []);
+
+  const acceptSkin = useCallback(
+    async (file: File | undefined) => {
+      if (file === undefined) {
+        return;
+      }
+      setBusy(true);
+      setError(null);
+      try {
+        const loaded = await skinFromFile(file);
+        takeSkin(file.name.replace(/\.png$/i, "") || "skin", loaded);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "That skin could not be read.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [takeSkin],
+  );
+
+  const lookUpSkin = useCallback(async () => {
+    const name = playerName.trim();
+    if (name === "") {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const found = await fetchSkinByName(name);
+      takeSkin(found.name, await skinFromBase64(found.png), found.model);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "That name could not be looked up.");
+    } finally {
+      setBusy(false);
+    }
+  }, [playerName, takeSkin]);
+
+  /**
+   * Builds the figure whenever the skin or what it is drawn on changes.
+   *
+   * <p>Rebuilt rather than adjusted, because the two options change the shape
+   * of the grid itself: a second layer standing off the body makes every part
+   * two texels wider, and an index into one grid means nothing in the other.
+   * Which is also why anything removed by hand is let go of here.
+   */
+  useEffect(() => {
+    if (skin === null) {
+      return;
+    }
+    try {
+      const built = buildSkinVoxels(skin.skin, { model: playerModel, layers: skinLayers });
+      sourceRef.current = {
+        structure: built.structure,
+        indices: built.indices,
+        models: null,
+        colours: built.colours,
+      };
+      setRemoved(new Set<number>());
+      setDone([]);
+      setUndone([]);
+      setMenu(null);
+      setLoadedPlan(false);
+
+      const built3d = buildVoxels(built.structure, built.indices, null, undefined, built.colours);
+      setModel(built3d);
+      const { count, source } = settingsRef.current;
+      const palette = paletteFor(built3d, count, source);
+      setSlots(palette);
+      setAssignment(autoAssign(colouredBlocks(built3d), palette));
+    } catch (cause) {
+      setModel(null);
+      setError(cause instanceof Error ? cause.message : "That skin could not be turned into a figure.");
+    }
+  }, [skin, playerModel, skinLayers]);
 
   // Opening a project link loads it without another upload.
   useEffect(() => {
@@ -881,7 +1098,10 @@ export default function App(): React.ReactElement {
   // assignment so the first look is not a wall of one colour.
   useEffect(() => {
     if (project === null) {
-      setModel(null);
+      // A skin may be open instead, and then the model is its to build.
+      if (skin === null) {
+        setModel(null);
+      }
       return;
     }
     let cancelled = false;
@@ -945,7 +1165,9 @@ export default function App(): React.ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [project]);
+    // A project and a skin are never both open, so this cannot run for a
+    // project because of a skin; it is here for the one case above.
+  }, [project, skin]);
 
   /**
    * Saves the plan shortly after the last change.
@@ -992,7 +1214,15 @@ export default function App(): React.ReactElement {
         setRemoved(after.removed);
         const source = sourceRef.current;
         if (source !== null) {
-          setModel(buildVoxels(source.structure, source.indices, source.models, after.removed));
+          setModel(
+            buildVoxels(
+              source.structure,
+              source.indices,
+              source.models,
+              after.removed,
+              source.colours,
+            ),
+          );
         }
       }
       if (after.assignment !== before.assignment) {
@@ -1169,9 +1399,9 @@ export default function App(): React.ReactElement {
         >
           <Flex align="center" gap="3" style={{ minWidth: 0 }}>
             <Heading size="3">VoxelPrint</Heading>
-            {project !== null && (
+            {(project !== null || skin !== null) && (
               <Text size="1" color="gray" truncate>
-                {project.fileName}
+                {project?.fileName ?? skin?.name}
               </Text>
             )}
             {model !== null && removed.size > 0 && (
@@ -1209,8 +1439,16 @@ export default function App(): React.ReactElement {
                 <Separator orientation="vertical" size="1" />
               </>
             )}
-            {project !== null && (
-              <Button size="1" variant="outline" onClick={() => setProject(null)}>
+            {(project !== null || skin !== null) && (
+              <Button
+                size="1"
+                variant="outline"
+                onClick={() => {
+                  setProject(null);
+                  setSkin(null);
+                  setModel(null);
+                }}
+              >
                 Open another
               </Button>
             )}
@@ -1227,7 +1465,7 @@ export default function App(): React.ReactElement {
           </Flex>
         </Flex>
 
-        {project === null ? (
+        {project === null && skin === null ? (
           <Box className="dropzone">
             <Flex direction="column" align="center" gap="4" style={{ width: "min(34rem, 100%)" }}>
               <Box>
@@ -1274,6 +1512,69 @@ export default function App(): React.ReactElement {
                   {busy ? "Reading \u2026" : "Drop a .mcprint here, or click to choose one"}
                 </Text>
               </label>
+
+              <Card size="2" style={{ width: "100%" }}>
+                <Flex direction="column" gap="3">
+                  <Box>
+                    <Text as="div" size="2" weight="medium">
+                      Or print a skin
+                    </Text>
+                    <Text as="p" size="1" color="gray">
+                      A skin is a texture on six boxes. One texel becomes one voxel, and the
+                      figure comes out the size you ask for.
+                    </Text>
+                  </Box>
+
+                  <Flex gap="2" align="center">
+                    <TextField.Root
+                      size="2"
+                      style={{ flex: 1 }}
+                      placeholder="Player name"
+                      value={playerName}
+                      disabled={busy}
+                      aria-label="Minecraft player name"
+                      onChange={(event) => setPlayerName(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void lookUpSkin();
+                        }
+                      }}
+                    />
+                    <Button
+                      size="2"
+                      disabled={busy || playerName.trim() === ""}
+                      onClick={() => void lookUpSkin()}
+                    >
+                      Look up
+                    </Button>
+                  </Flex>
+
+                  <label
+                    className={skinDragging ? "target thin dragging" : "target thin"}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      setSkinDragging(true);
+                    }}
+                    onDragLeave={() => setSkinDragging(false)}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      setSkinDragging(false);
+                      void acceptSkin(event.dataTransfer.files[0]);
+                    }}
+                  >
+                    <input
+                      type="file"
+                      accept="image/png,.png"
+                      disabled={busy}
+                      onChange={(event) => void acceptSkin(event.target.files?.[0])}
+                    />
+                    <Text size="2" color={skinDragging ? undefined : "gray"}>
+                      Or drop a skin PNG here
+                    </Text>
+                  </label>
+                </Flex>
+              </Card>
 
               {error !== null && (
                 <Callout.Root size="1" color="red" style={{ width: "100%" }}>
@@ -1327,7 +1628,12 @@ export default function App(): React.ReactElement {
                 </Flex>
               ) : (
                 <>
-                  <Viewer model={model} colours={colours} onPick={setMenu} frame={project.id} />
+                  <Viewer
+                    model={model}
+                    colours={colours}
+                    onPick={setMenu}
+                    frame={project?.id ?? "skin"}
+                  />
 
                   <Box className="overlay top-left">
                     <Card size="1">
@@ -1341,8 +1647,10 @@ export default function App(): React.ReactElement {
                         </Button>
                         <Tooltip
                           content={
-                            model.modelled
-                              ? "What the build looks like in the game"
+                            model.trueColour
+                              ? skin !== null
+                                ? "The colours of the skin itself"
+                                : "What the build looks like in the game"
                               : "This export carries no textures to take colours from"
                           }
                         >
@@ -1350,9 +1658,9 @@ export default function App(): React.ReactElement {
                             size="1"
                             variant={colourMode === "minecraft" ? "solid" : "soft"}
                             onClick={() => setColourMode("minecraft")}
-                            disabled={!model.modelled}
+                            disabled={!model.trueColour}
                           >
-                            Minecraft
+                            {skin !== null ? "Skin" : "Minecraft"}
                           </Button>
                         </Tooltip>
                       </Flex>
@@ -1363,7 +1671,8 @@ export default function App(): React.ReactElement {
                     <Card size="1">
                       <Flex gap="3" align="center" wrap="wrap">
                         <Text size="1" color="gray">
-                          Right click a block to remove it or change its filament. Drag to turn.
+                          Right click a {skin === null ? "block" : "voxel"} to remove it or change
+                          its filament. Drag to turn.
                         </Text>
                         {removed.size > 0 && (
                           <Button
@@ -1386,14 +1695,38 @@ export default function App(): React.ReactElement {
             <Box className="side right">
               {model !== null && (
                 <>
+                  {skin !== null && (
+                    <>
+                      <SkinFigure
+                        model={playerModel}
+                        onModel={setPlayerModel}
+                        layers={skinLayers}
+                        onLayers={setSkinLayers}
+                      />
+                      <Separator size="4" />
+                    </>
+                  )}
                   <Download
+                    // Remounted between a build and a skin, so the size it
+                    // starts at is the one that suits what is open.
+                    key={skin === null ? "build" : "skin"}
                     model={model}
                     slots={slots}
                     assignment={assignment}
-                    name={project.fileName.replace(/\.mcprint$/i, "") || "voxelprint"}
+                    name={
+                      project !== null
+                        ? project.fileName.replace(/\.mcprint$/i, "") || "voxelprint"
+                        : skin?.name || "skin"
+                    }
+                    startingSize={skin === null ? 10 : 2}
+                    unit={skin === null ? "Block" : "Voxel"}
                   />
-                  <Separator size="4" />
-                  <Facts project={project} />
+                  {project !== null && (
+                    <>
+                      <Separator size="4" />
+                      <Facts project={project} />
+                    </>
+                  )}
                 </>
               )}
               {saveError !== null && (

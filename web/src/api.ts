@@ -75,3 +75,27 @@ export async function uploadProject(file: File): Promise<Project> {
   }
   return (await response.json()) as Project;
 }
+
+/** What a player's skin is, fetched by name through the server. */
+export interface NamedSkin {
+  /** The name as Mojang spells it, which may differ in case from what was typed. */
+  name: string;
+  model: "classic" | "slim";
+  /** The PNG itself, base64, because JSON cannot hold bytes. */
+  png: string;
+}
+
+/**
+ * Looks a player's skin up by name.
+ *
+ * <p>Through the server rather than straight from the browser: Mojang's profile
+ * services send no cross-origin headers, so the browser is refused before it
+ * has asked.
+ */
+export async function fetchSkinByName(name: string): Promise<NamedSkin> {
+  const response = await fetch(`/api/skin?name=${encodeURIComponent(name)}`);
+  if (!response.ok) {
+    throw new Error(await failure(response));
+  }
+  return (await response.json()) as NamedSkin;
+}

@@ -97,6 +97,15 @@ export interface VoxelModel {
   readonly shaped: boolean;
   /** Whether real models were used. */
   readonly modelled: boolean;
+  /**
+   * Whether {@link minecraftColours} are measured rather than guessed.
+   *
+   * <p>True for an export that carries its textures, and for a skin, whose
+   * palette is colours to begin with. False where the colours come from the
+   * table of opinions in {@code blockColors}, which is worth saying out loud
+   * before somebody prints a build in them.
+   */
+  readonly trueColour: boolean;
   /** How many blocks across, up and deep the selection is. */
   readonly size: { readonly width: number; readonly height: number; readonly depth: number };
   /** Block id per palette index, properties stripped. */
@@ -158,6 +167,7 @@ export function buildVoxels(
   indices: Uint32Array,
   models: BlockModels | null,
   removed: ReadonlySet<number> = EMPTY,
+  measured?: readonly number[],
 ): VoxelModel {
   const { width, height, depth, palette } = structure;
 
@@ -176,9 +186,12 @@ export function buildVoxels(
   const hasModel = palette.map((_, index) => (quads[index]?.length ?? 0) > 0);
   const modelled = models !== null && hasModel.some(Boolean);
 
-  const minecraftColours = palette.map((state, index) =>
-    averageMaterialColour(models, quads[index]) ?? colourFor(state).colour,
-  );
+  // Given outright where the source knows them exactly, which is what a skin
+  // is: its palette is colours, not block names, and there is nothing to look
+  // up or average.
+  const minecraftColours =
+    measured ??
+    palette.map((state, index) => averageMaterialColour(models, quads[index]) ?? colourFor(state).colour);
 
   // Whether a block can hide what is behind it. Without shapes nothing is
   // known, so every solid block counts as opaque exactly as it used to.
@@ -325,6 +338,7 @@ export function buildVoxels(
     solid,
     shaped,
     modelled,
+    trueColour: modelled || measured !== undefined,
     blockIds,
     minecraftColours,
     blockTypeColours: colourPerBlockType(blockIds, minecraftColours, typeCounts),

@@ -5,6 +5,7 @@ import { mkdir } from "node:fs/promises";
 import Fastify from "fastify";
 import { config } from "./config.js";
 import { registerProjectRoutes } from "./routes/projects.js";
+import { registerSkinRoutes } from "./routes/skins.js";
 import { ProjectStore } from "./storage/projectStore.js";
 
 const app = Fastify({
@@ -26,6 +27,7 @@ const store = new ProjectStore(config.dataDirectory);
 app.get("/api/health", async () => ({ status: "ok" }));
 
 registerProjectRoutes(app, store);
+registerSkinRoutes(app);
 
 /**
  * Serves the built frontend, when there is one.
