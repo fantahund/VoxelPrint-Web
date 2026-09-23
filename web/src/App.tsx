@@ -28,8 +28,15 @@ import {
 } from "./api";
 import { skinFromBase64, skinFromFile } from "./skin/load";
 import {
+  LAYERS,
+  LAYER_NAMES,
+  THICKEST,
+  THINNEST,
+  allLayers,
   buildSkinVoxels,
+  layersOf,
   slimBySkin,
+  type Layer,
   type PlayerModel,
   type Skin,
   type SkinLayers,
@@ -675,52 +682,136 @@ function Download({
 /**
  * What the figure is made of, for a skin.
  *
- * <p>Two questions, and only one of them is really a choice. The arms are a
- * fact about the skin that the file does not state, so it is guessed and left
- * where it can be corrected. The second layer is the choice: painted on, which
- * is what the game draws, or standing off the body, which is what the 3D Skin
- * Layers mod draws and what most people picture when they picture a skin.
+ * <p>Three questions. The arms are a fact about the skin that the file does not
+ * state, so it is guessed and left where it can be corrected. The layers are
+ * the choice, and it is made a part at a time for the same reason the game
+ * makes it a part at a time -- nobody wants all six or none -- with the added
+ * question of whether a layer is painted on or stands off the body. And a layer
+ * that stands off needs a thickness, because a whole texel of it is a great
+ * deal on a head only eight texels across.
  */
 function SkinFigure({
   model,
   onModel,
   layers,
   onLayers,
+  present,
+  thickness,
+  onThickness,
 }: {
   model: PlayerModel;
   onModel: (next: PlayerModel) => void;
-  layers: SkinLayers;
-  onLayers: (next: SkinLayers) => void;
+  layers: Readonly<Record<Layer, SkinLayers>>;
+  onLayers: (next: Readonly<Record<Layer, SkinLayers>>) => void;
+  /** The layers this skin actually carries; the rest are shown but not offered. */
+  present: ReadonlySet<Layer>;
+  thickness: number;
+  onThickness: (next: number) => void;
 }): React.ReactElement {
+  const standing = LAYERS.some((layer) => present.has(layer) && layers[layer] === "solid");
+  // Short labels: six rows of three buttons and a part name have to fit a side
+  // column, and "Right trouser leg" is not a short part name.
+  const choices: ReadonlyArray<{ how: SkinLayers; label: string }> = [
+    { how: "off", label: "Off" },
+    { how: "flat", label: "Flat" },
+    { how: "solid", label: "3D" },
+  ];
+
   return (
-    <Panel title="The figure" hint="Both change the shape, so the preview is built again.">
+    <Panel title="The figure" hint="Every one of these changes the shape, so the preview is built again.">
       <Flex direction="column" gap="3">
         <Box>
-          <Text as="div" size="1" weight="medium" mb="1">
-            Second layer
-          </Text>
-          <Flex gap="2" wrap="wrap">
-            <Button
-              size="1"
-              variant={layers === "flat" ? "solid" : "soft"}
-              onClick={() => onLayers("flat")}
-            >
-              Painted on
-            </Button>
-            <Button
-              size="1"
-              variant={layers === "solid" ? "solid" : "soft"}
-              onClick={() => onLayers("solid")}
-            >
-              Standing off
-            </Button>
+          <Flex align="baseline" justify="between" mb="1" gap="2">
+            <Text as="div" size="1" weight="medium">
+              Second layer
+            </Text>
+            <Flex gap="2">
+              {choices.map(({ how, label }) => (
+                <Button
+                  key={how}
+                  size="1"
+                  variant="ghost"
+                  onClick={() => onLayers(allLayers(how))}
+                >
+                  All {label === "3D" ? "3D" : label.toLowerCase()}
+                </Button>
+              ))}
+            </Flex>
           </Flex>
+
+          <Flex direction="column" gap="1">
+            {LAYERS.map((layer) => {
+              const has = present.has(layer);
+              return (
+                <Flex key={layer} align="center" justify="between" gap="2">
+                  <Text size="1" color={has ? undefined : "gray"} truncate>
+                    {LAYER_NAMES[layer]}
+                  </Text>
+                  <Flex gap="1">
+                    {choices.map(({ how, label }) => (
+                      <Button
+                        key={how}
+                        size="1"
+                        disabled={!has}
+                        variant={layers[layer] === how ? "solid" : "soft"}
+                        onClick={() => onLayers({ ...layers, [layer]: how })}
+                      >
+                        {label}
+                      </Button>
+                    ))}
+                  </Flex>
+                </Flex>
+              );
+            })}
+          </Flex>
+
           <Text as="p" size="1" color="gray" mt="1">
-            {layers === "flat"
-              ? "Six plain boxes, with the hat, the jacket and the sleeves painted onto them wherever they are opaque. What the game itself draws."
-              : "The second layer as a layer of its own, a texel outside the body and only where its texture is opaque. What the 3D Skin Layers mod draws: hair sticks out, a hood stands off the head, a jacket has a hem."}
+            Flat is what the game draws: the layer goes onto the body where it is
+            opaque, and the figure stays six boxes. 3D is what the 3D Skin Layers
+            mod draws: the layer sits on the body as a layer of its own, so hair
+            sticks out and a hood stands off the head.
+            {present.size === 0
+              ? " This skin has no second layer at all -- it was saved with nothing see-through, which is the only way a skin can say a layer is not there."
+              : present.size < LAYERS.length
+                ? " The greyed out ones are not in this skin: an old 64 by 32 skin has a hat and nothing else."
+                : ""}
           </Text>
         </Box>
+
+        {standing && (
+          <Box>
+            <Text as="div" size="1" weight="medium" mb="1">
+              Layer thickness
+            </Text>
+            <TextField.Root
+              size="1"
+              type="number"
+              min={THINNEST}
+              max={THICKEST}
+              step={0.125}
+              value={String(thickness)}
+              aria-label="Layer thickness in texels"
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                if (Number.isFinite(next) && next > 0) {
+                  onThickness(Math.min(Math.max(next, THINNEST), THICKEST));
+                }
+              }}
+            >
+              <TextField.Slot side="right">
+                <Text size="1" color="gray">
+                  texels
+                </Text>
+              </TextField.Slot>
+            </TextField.Root>
+            <Text as="p" size="1" color="gray" mt="1">
+              A whole texel is as thick as the body's own voxels, which on a head
+              eight texels across is a quarter again as wide. The layer sits
+              against the body whatever it is set to, so a thin one is a thin
+              shell on the skin rather than a slab floating off it.
+            </Text>
+          </Box>
+        )}
 
         <Box>
           <Text as="div" size="1" weight="medium" mb="1">
@@ -882,7 +973,19 @@ export default function App(): React.ReactElement {
    */
   const [skin, setSkin] = useState<{ name: string; skin: Skin } | null>(null);
   const [playerModel, setPlayerModel] = useState<PlayerModel>("classic");
-  const [skinLayers, setSkinLayers] = useState<SkinLayers>("solid");
+  /**
+   * What becomes of each layer.
+   *
+   * <p>The hat stands off and the rest is painted on, which is the figure most
+   * people mean: hair and hoods are what anybody wants in three dimensions, and
+   * a jacket standing off a body mostly reads as a body that has swollen.
+   */
+  const [skinLayers, setSkinLayers] = useState<Readonly<Record<Layer, SkinLayers>>>(() => ({
+    ...allLayers("flat"),
+    hat: "solid",
+  }));
+  /** How thick a standing off layer is, in texels. */
+  const [skinThickness, setSkinThickness] = useState(0.5);
   const [playerName, setPlayerName] = useState("");
   const [model, setModel] = useState<VoxelModel | null>(null);
   /** Whether the preview shows the build or the print. */
@@ -1040,7 +1143,11 @@ export default function App(): React.ReactElement {
       return;
     }
     try {
-      const built = buildSkinVoxels(skin.skin, { model: playerModel, layers: skinLayers });
+      const built = buildSkinVoxels(skin.skin, {
+        model: playerModel,
+        layers: skinLayers,
+        thickness: skinThickness,
+      });
       sourceRef.current = {
         structure: built.structure,
         indices: built.indices,
@@ -1063,7 +1170,7 @@ export default function App(): React.ReactElement {
       setModel(null);
       setError(cause instanceof Error ? cause.message : "That skin could not be turned into a figure.");
     }
-  }, [skin, playerModel, skinLayers]);
+  }, [skin, playerModel, skinLayers, skinThickness]);
 
   // Opening a project link loads it without another upload.
   useEffect(() => {
@@ -1702,6 +1809,9 @@ export default function App(): React.ReactElement {
                         onModel={setPlayerModel}
                         layers={skinLayers}
                         onLayers={setSkinLayers}
+                        present={layersOf(skin.skin)}
+                        thickness={skinThickness}
+                        onThickness={setSkinThickness}
                       />
                       <Separator size="4" />
                     </>

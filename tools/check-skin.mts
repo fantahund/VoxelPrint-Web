@@ -16,8 +16,10 @@
  * front, left, back: walking around the box has to walk along the strip.
  */
 import {
+  allLayers,
   buildSkinVoxels,
   readSkin,
+  type Layer,
   type PlayerModel,
   type SkinLayers,
 } from "../web/src/skin/skin.js";
@@ -51,7 +53,13 @@ const OUTER: ReadonlyArray<[number, number, number, number]> = [
   [48, 48, 64, 64], // left sleeve
 ];
 
-function figure(model: PlayerModel, layers: SkinLayers, bareSkin = false) {
+function figure(
+  model: PlayerModel,
+  layers: SkinLayers,
+  bareSkin = false,
+  thickness = 1,
+  only?: Partial<Record<Layer, SkinLayers>>,
+) {
   const pixels = coded();
   if (bareSkin) {
     // With the second layer opaque everywhere, the body reads the layer rather
@@ -66,8 +74,17 @@ function figure(model: PlayerModel, layers: SkinLayers, bareSkin = false) {
     }
   }
   const skin = readSkin(pixels, 64, 64);
-  const built = buildSkinVoxels(skin, { model, layers });
+  const built = buildSkinVoxels(skin, {
+    model,
+    layers: { ...allLayers(layers), ...only },
+    thickness,
+  });
   const { width, height, depth, palette } = built.structure;
+  const shapeAt = (x: number, y: number, z: number) => {
+    if (x < 0 || y < 0 || z < 0 || x >= width || y >= height || z >= depth) return null;
+    const entry = built.indices[x + z * width + y * width * depth]!;
+    return entry === 0 ? null : built.structure.shapes![entry]!;
+  };
   const colourAt = (x: number, y: number, z: number): [number, number] | null => {
     if (x < 0 || y < 0 || z < 0 || x >= width || y >= height || z >= depth) return null;
     const entry = built.indices[x + z * width + y * width * depth]!;
@@ -75,7 +92,7 @@ function figure(model: PlayerModel, layers: SkinLayers, bareSkin = false) {
     const colour = built.colours[entry]!;
     return [(colour >> 8) & 0xff, colour & 0xff];
   };
-  return { built, width, height, depth, palette, colourAt };
+  return { built, width, height, depth, palette, colourAt, shapeAt };
 }
 
 let problems = 0;
@@ -200,7 +217,11 @@ const ok = (message: string): void => console.log("  ok   " + message);
     }
   }
   const skin = readSkin(pixels, 64, 64);
-  const built = buildSkinVoxels(skin, { model: "classic", layers: "solid" });
+  const built = buildSkinVoxels(skin, {
+    model: "classic",
+    layers: allLayers("solid"),
+    thickness: 1,
+  });
   const { width, height, depth } = built.structure;
   let hatVoxels = 0;
   for (let i = 0; i < built.indices.length; i++) {
@@ -208,7 +229,10 @@ const ok = (message: string): void => console.log("  ok   " + message);
     const x = i % width;
     const z = Math.floor(i / width) % depth;
     const y = Math.floor(i / (width * depth));
-    // The grid's corner is (-1, -1, -3); the hat's front face stands at z = 9.
+    // The hat's front face is one slab, ten by ten, standing a texel in front
+    // of the head. Every other layer is standing off here too, so the trousers
+    // reach a texel below the soles and the whole grid is shifted up by one:
+    // the slab sits at y 24..33 rather than 23..32.
     if (z === depth - 1 && y >= 24 && y <= 33) hatVoxels++;
   }
   // The grown head is 10 wide and 10 tall; its front face is one 10 by 10 slab.
@@ -220,10 +244,89 @@ const ok = (message: string): void => console.log("  ok   " + message);
   // The hat is the only part of the head's layer that is there, so the head
   // grows forwards and nowhere else; the body, sleeves and trousers are still
   // opaque here and grow all round.
+  // The head grows forwards only, because that is the only side of its hat
+  // that is drawn; the other layers are whole, so they grow all round.
   if (width === 18 && height === 34 && depth === 9) {
     ok(`a layer that is only there in places grows the figure only there: ${width} x ${height} x ${depth}`);
   } else {
     fail(`the figure came out ${width} x ${height} x ${depth}, wanted 18 x 34 x 9`);
+  }
+}
+
+// --- a layer can be turned off one part at a time ---------------------------
+{
+  const all = figure("classic", "solid");
+  const hatOnly = figure("classic", "off", false, 1, { hat: "solid" });
+  const none = figure("classic", "off");
+  const fill = (f: { built: { indices: Uint32Array } }): number =>
+    f.built.indices.reduce((n, v) => n + (v === 0 ? 0 : 1), 0);
+
+  if (fill(none) < fill(hatOnly) && fill(hatOnly) < fill(all)) {
+    ok(`off ${fill(none)} < hat only ${fill(hatOnly)} < every layer ${fill(all)} voxels`);
+  } else {
+    fail(`turning layers off changed nothing: ${fill(none)}, ${fill(hatOnly)}, ${fill(all)}`);
+  }
+  // With every layer off the figure is the plain six boxes again.
+  if (none.width === 16 && none.height === 32 && none.depth === 8) {
+    ok("with every layer off the figure is the six boxes: 16 x 32 x 8");
+  } else {
+    fail(`every layer off gave ${none.width} x ${none.height} x ${none.depth}`);
+  }
+  // A hat standing off grows the head and leaves the legs alone.
+  if (hatOnly.height === 33 && hatOnly.width === 16) {
+    ok(`a hat on its own grows the figure upwards only: ${hatOnly.width} x ${hatOnly.height}`);
+  } else {
+    fail(`a hat on its own gave ${hatOnly.width} x ${hatOnly.height}`);
+  }
+}
+
+// --- a thin layer sits against the body, not out in front of it -------------
+{
+  const { shapeAt, depth } = figure("classic", "off", false, 0.25, { hat: "solid" });
+  // The cell in front of the head's front face, at the middle of the face.
+  const front = shapeAt(8, 28, depth - 1);
+  if (front !== null && front.length === 1) {
+    const [x0, y0, z0, x1, y1, z1] = front[0]!;
+    // A quarter of a texel, at the back of its own cell, which is the side the
+    // head is on.
+    if (z0 === 0 && Math.abs(z1 - 0.25) < 1e-9 && x0 === 0 && x1 === 1 && y0 === 0 && y1 === 1) {
+      ok("a quarter thick hat is a quarter of the cell, on the side the head is");
+    } else {
+      fail(`the hat's front cell is ${front[0]!.join(",")}`);
+    }
+  } else {
+    fail(`the hat's front cell holds ${front === null ? "nothing" : front.length + " boxes"}`);
+  }
+
+  // An edge of the hat is on two sides of its box, and is the bar where the two
+  // slabs cross rather than both of them laid over each other: laid over each
+  // other, each arm runs out to the corner of the cell and a quarter thick hat
+  // keeps the square shoulders of a whole one.
+  // The hat's top front edge: the top of the grown head is a texel above the
+  // head's own top, which stands at 31.
+  const edge = shapeAt(8, 32, depth - 1);
+  if (edge !== null && edge.length === 1) {
+    const [x0, y0, z0, x1, y1, z1] = edge[0]!;
+    if (
+      x0 === 0 && x1 === 1 &&
+      y0 === 0 && Math.abs(y1 - 0.25) < 1e-9 &&
+      z0 === 0 && Math.abs(z1 - 0.25) < 1e-9
+    ) {
+      ok("an edge of the hat is the bar where its two slabs cross, a quarter on each");
+    } else {
+      fail(`the hat's top front edge is ${edge[0]!.join(",")}`);
+    }
+  } else {
+    fail(`the hat's top front edge holds ${edge === null ? "nothing" : edge.length + " boxes"}`);
+  }
+
+  // A whole texel thick is the whole cell, which is what it was before there
+  // was a thickness at all.
+  const whole = figure("classic", "off", false, 1, { hat: "solid" }).shapeAt(8, 28, depth - 1);
+  if (whole !== null && whole.length === 1 && whole[0]!.join(",") === "0,0,0,1,1,1") {
+    ok("a whole texel thick fills the cell");
+  } else {
+    fail(`a whole texel gave ${whole === null ? "nothing" : whole.map((b) => b.join(",")).join(" | ")}`);
   }
 }
 

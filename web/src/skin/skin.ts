@@ -1,4 +1,4 @@
-import type { StructureInfo } from "../types";
+import type { ShapeBox, StructureInfo } from "../types";
 
 /**
  * Turns a Minecraft skin into something the rest of the site can print.
@@ -19,25 +19,68 @@ import type { StructureInfo } from "../types";
  * fillable rather than a solid block of one colour.
  */
 
-/** How the second layer is printed. */
-export type SkinLayers = "flat" | "solid";
+/**
+ * What becomes of one part's second layer.
+ *
+ * <p>{@code off} leaves it out, the way the game's own skin settings do.
+ * {@code flat} paints it onto the body where it is opaque, which is what the
+ * game draws with the setting on. {@code solid} makes it a layer of its own,
+ * standing off the body, which is what the 3D Skin Layers mod draws.
+ *
+ * <p>Per part rather than for the whole figure, because they do not all suit
+ * the same answer: hair standing off a head is the point of the thing, and a
+ * jacket standing off a body often just looks swollen.
+ */
+export type SkinLayers = "off" | "flat" | "solid";
 
 /** Which arms the model has. */
 export type PlayerModel = "classic" | "slim";
 
+/** The parts of a skin that have a second layer, as the game names them. */
+export const LAYERS = [
+  "hat",
+  "jacket",
+  "rightSleeve",
+  "leftSleeve",
+  "rightTrousers",
+  "leftTrousers",
+] as const;
+
+export type Layer = (typeof LAYERS)[number];
+
+/** What each of them is called on screen. */
+export const LAYER_NAMES: Readonly<Record<Layer, string>> = {
+  hat: "Hat",
+  jacket: "Jacket",
+  rightSleeve: "Right sleeve",
+  leftSleeve: "Left sleeve",
+  rightTrousers: "Right trouser leg",
+  leftTrousers: "Left trouser leg",
+};
+
+/** Every layer the same way, which is where a figure starts. */
+export function allLayers(how: SkinLayers): Record<Layer, SkinLayers> {
+  return Object.fromEntries(LAYERS.map((layer) => [layer, how])) as Record<Layer, SkinLayers>;
+}
+
+/** The thinnest and thickest a standing off layer may be, in texels. */
+export const THINNEST = 0.125;
+export const THICKEST = 1;
+
 export interface SkinOptions {
   readonly model: PlayerModel;
+  readonly layers: Readonly<Record<Layer, SkinLayers>>;
   /**
-   * Whether the second layer is a layer at all.
+   * How thick a standing off layer is, in texels.
    *
-   * <p>{@code flat} is what the game does: the hat, the jacket and the sleeves
-   * are painted onto the body where they are opaque, and the figure is the
-   * plain six boxes. {@code solid} is what the 3D Skin Layers mod does: the
-   * second layer becomes a shell of its own, one texel outside the body, and is
-   * there only where its texture is opaque. A hood stands off the head, hair
-   * sticks out, a jacket has a hem.
+   * <p>One texel is the whole cell, which is what a voxel of this figure is and
+   * what this used to be with no say in the matter. It is also a great deal:
+   * a head is eight texels across, so a hat a texel thick adds a quarter to its
+   * width, and hair drawn as a few stray pixels comes out as a slab. Less than
+   * one puts the layer on part of its cell instead, hugging the body, which is
+   * nearer what the mod draws and what the eye expects.
    */
-  readonly layers: SkinLayers;
+  readonly thickness: number;
 }
 
 /** A skin, always as 64 by 64 RGBA, whatever size it arrived as. */
@@ -101,6 +144,8 @@ function regionsOf(u: number, v: number, w: number, d: number): Record<Side, Reg
  */
 interface Part {
   readonly name: string;
+  /** Which of the game's layer settings covers this part. */
+  readonly layer: Layer;
   readonly x: number;
   readonly y: number;
   readonly z: number;
@@ -233,6 +278,7 @@ function partsOf(skin: Skin, model: PlayerModel): Part[] {
 
   const part = (
     name: string,
+    layer: Layer,
     x: number,
     y: number,
     z: number,
@@ -244,6 +290,7 @@ function partsOf(skin: Skin, model: PlayerModel): Part[] {
     mirrored = false,
   ): Part => ({
     name,
+    layer,
     x,
     y,
     z,
@@ -256,19 +303,34 @@ function partsOf(skin: Skin, model: PlayerModel): Part[] {
   });
 
   return [
-    part("head", 4, 24, -2, 8, 8, 8, [0, 0], hat ? [32, 0] : null),
-    part("body", 4, 12, 0, 8, 12, 4, [16, 16], sleeves ? [16, 32] : null),
-    part("right arm", 4 - arm, 12, 0, arm, 12, 4, [40, 16], sleeves ? [40, 32] : null),
+    part("head", "hat", 4, 24, -2, 8, 8, 8, [0, 0], hat ? [32, 0] : null),
+    part("body", "jacket", 4, 12, 0, 8, 12, 4, [16, 16], sleeves ? [16, 32] : null),
+    part("right arm", "rightSleeve", 4 - arm, 12, 0, arm, 12, 4, [40, 16], sleeves ? [40, 32] : null),
     // An old skin has no left limbs at all, so the right ones are read
     // reflected, exactly as the game does it.
     skin.legacy
-      ? part("left arm", 12, 12, 0, arm, 12, 4, [40, 16], null, true)
-      : part("left arm", 12, 12, 0, arm, 12, 4, [32, 48], [48, 48]),
-    part("right leg", 4, 0, 0, 4, 12, 4, [0, 16], sleeves ? [0, 32] : null),
+      ? part("left arm", "leftSleeve", 12, 12, 0, arm, 12, 4, [40, 16], null, true)
+      : part("left arm", "leftSleeve", 12, 12, 0, arm, 12, 4, [32, 48], [48, 48]),
+    part("right leg", "rightTrousers", 4, 0, 0, 4, 12, 4, [0, 16], sleeves ? [0, 32] : null),
     skin.legacy
-      ? part("left leg", 8, 0, 0, 4, 12, 4, [0, 16], null, true)
-      : part("left leg", 8, 0, 0, 4, 12, 4, [16, 48], [0, 48]),
+      ? part("left leg", "leftTrousers", 8, 0, 0, 4, 12, 4, [0, 16], null, true)
+      : part("left leg", "leftTrousers", 8, 0, 0, 4, 12, 4, [16, 48], [0, 48]),
   ];
+}
+
+/**
+ * Which layers this skin actually has.
+ *
+ * <p>An old skin has a hat and nothing else, and a skin saved without
+ * transparency has none at all. Worth knowing on screen: a switch that cannot
+ * do anything should say so rather than be pressed twice.
+ */
+export function layersOf(skin: Skin): ReadonlySet<Layer> {
+  return new Set(
+    partsOf(skin, "classic")
+      .filter((part) => part.outer !== null)
+      .map((part) => part.layer),
+  );
 }
 
 /**
@@ -351,19 +413,19 @@ function clamp(value: number, limit: number): number {
  */
 export function buildSkinVoxels(skin: Skin, options: SkinOptions): SkinVoxels {
   const parts = partsOf(skin, options.model);
-  const solid = options.layers === "solid";
+  const thickness = Math.min(Math.max(options.thickness, THINNEST), THICKEST);
 
-  /** Colour per cell, keyed by "x,y,z"; later ones lose to earlier ones. */
-  const cells = new Map<string, number>();
+  /** What is in each cell, keyed by "x,y,z"; the first one to claim it wins. */
+  const cells = new Map<string, Cell>();
   let low = [Infinity, Infinity, Infinity];
   let high = [-Infinity, -Infinity, -Infinity];
 
-  const put = (x: number, y: number, z: number, colour: number): void => {
+  const put = (x: number, y: number, z: number, cell: Cell): void => {
     const key = `${x},${y},${z}`;
     if (cells.has(key)) {
       return;
     }
-    cells.set(key, colour);
+    cells.set(key, cell);
     low = [Math.min(low[0] as number, x), Math.min(low[1] as number, y), Math.min(low[2] as number, z)];
     high = [Math.max(high[0] as number, x), Math.max(high[1] as number, y), Math.max(high[2] as number, z)];
   };
@@ -372,7 +434,7 @@ export function buildSkinVoxels(skin: Skin, options: SkinOptions): SkinVoxels {
   const surface = (
     part: Part,
     grown: number,
-    colourOf: (sides: Side[], px: number, py: number, pz: number) => number | null,
+    cellOf: (sides: Side[], px: number, py: number, pz: number) => Cell | null,
   ): void => {
     const w = part.w + grown * 2;
     const h = part.h + grown * 2;
@@ -386,79 +448,142 @@ export function buildSkinVoxels(skin: Skin, options: SkinOptions): SkinVoxels {
             // nothing: this is what leaves the figure hollow.
             continue;
           }
-          const colour = colourOf(sides, px, py, pz);
-          if (colour === null) {
+          const cell = cellOf(sides, px, py, pz);
+          if (cell === null) {
             continue;
           }
-          put(part.x - grown + px, part.y + h - 1 - grown - py, part.z - grown + pz, colour);
+          put(part.x - grown + px, part.y + h - 1 - grown - py, part.z - grown + pz, cell);
         }
       }
     }
   };
 
-  // The body. Its own texture, and -- when the second layer is being painted on
+  // The body. Its own texture, and -- where the layer is being painted on
   // rather than stood off -- the layer over it wherever that is opaque.
   for (const part of parts) {
+    const how = options.layers[part.layer];
     surface(part, 0, (sides, px, py, pz) => {
       for (const side of sides) {
-        if (!solid && part.outer !== null) {
+        if (how === "flat" && part.outer !== null) {
           const [ou, ov] = texelOf(part, part.outer, side, px, py, pz);
           if (alphaAt(skin, ou, ov) >= OPAQUE) {
-            return colourAt(skin, ou, ov);
+            return { colour: colourAt(skin, ou, ov), sides: null };
           }
         }
         const [u, v] = texelOf(part, part.base, side, px, py, pz);
         if (alphaAt(skin, u, v) >= OPAQUE) {
-          return colourAt(skin, u, v);
+          return { colour: colourAt(skin, u, v), sides: null };
         }
       }
       // Every side of this voxel is transparent, which happens on the unused
       // column of a classic arm in a slim skin. The voxel is still part of the
       // body and is better grey than missing.
-      return NOTHING;
+      return { colour: NOTHING, sides: null };
     });
   }
 
-  // The second layer as a layer of its own.
-  if (solid) {
-    for (const part of parts) {
-      if (part.outer === null) {
-        continue;
-      }
-      const outer = part.outer;
-      surface(part, 1, (sides, px, py, pz) => {
-        for (const side of sides) {
-          const [u, v] = texelOf(
-            part,
-            outer,
-            side,
-            clamp(px - 1, part.w - 1),
-            clamp(py - 1, part.h - 1),
-            clamp(pz - 1, part.d - 1),
-          );
-          if (alphaAt(skin, u, v) >= OPAQUE) {
-            return colourAt(skin, u, v);
-          }
-        }
-        return null;
-      });
+  // The layers that stand off, each on the body it belongs to.
+  for (const part of parts) {
+    if (part.outer === null || options.layers[part.layer] !== "solid") {
+      continue;
     }
+    const outer = part.outer;
+    surface(part, 1, (sides, px, py, pz) => {
+      // A cell of the grown box may be on more than one of its sides, and then
+      // it carries a slab for each: an edge of a hat is an L, not a gap.
+      const drawn: Side[] = [];
+      let colour: number | null = null;
+      for (const side of sides) {
+        const [u, v] = texelOf(
+          part,
+          outer,
+          side,
+          clamp(px - 1, part.w - 1),
+          clamp(py - 1, part.h - 1),
+          clamp(pz - 1, part.d - 1),
+        );
+        if (alphaAt(skin, u, v) >= OPAQUE) {
+          drawn.push(side);
+          colour ??= colourAt(skin, u, v);
+        }
+      }
+      return colour === null ? null : { colour, sides: drawn };
+    });
   }
 
-  return pack(cells, low as [number, number, number], high as [number, number, number]);
+  return pack(cells, low as [number, number, number], high as [number, number, number], thickness);
+}
+
+/**
+ * What one cell of the figure holds.
+ *
+ * @param sides null for a whole cell, which is what the body is made of; the
+ *              sides of its box a layer's cell is on, which is what decides the
+ *              shape of the slab it holds
+ */
+interface Cell {
+  readonly colour: number;
+  readonly sides: Side[] | null;
+}
+
+/**
+ * The box a cell of a standing off layer holds.
+ *
+ * <p>A layer is the body's surface moved outwards by its own thickness, and
+ * what that leaves in one cell depends on how many of the box's sides the cell
+ * is on: against a face it is a slab, along an edge the bar where two slabs
+ * cross, at a corner the little cube where three do. Which is to say the sides
+ * are intersected rather than added up. Added up, each arm of the L at an edge
+ * runs out to the corner of its cell, and a quarter thick hat keeps the square
+ * shoulders of a whole one.
+ *
+ * <p>Which side of its own cell a slab sits on follows from which side of the
+ * grown box the cell is on: a cell out in front of the body has the body behind
+ * it, so its slab is at the back of its own cell and the layer rests on the
+ * skin rather than floating off it.
+ */
+function slabOf(sides: readonly Side[], thickness: number): ShapeBox {
+  const box: [number, number, number, number, number, number] = [0, 0, 0, 1, 1, 1];
+  for (const side of sides) {
+    switch (side) {
+      case "front":
+        box[5] = thickness;
+        break;
+      case "back":
+        box[2] = 1 - thickness;
+        break;
+      case "right":
+        box[0] = 1 - thickness;
+        break;
+      case "left":
+        box[3] = thickness;
+        break;
+      case "top":
+        box[4] = thickness;
+        break;
+      case "bottom":
+        box[1] = 1 - thickness;
+        break;
+    }
+  }
+  return box as ShapeBox;
 }
 
 /**
  * Turns the cells into a palette and a grid, the way an export carries them.
  *
- * <p>One palette entry per colour, so the filament plan can treat a colour the
- * way it treats a block type: clustered onto the slots there are, reassignable
- * by hand, and removable in the preview.
+ * <p>One palette entry per colour and shape. The colour is the block id, so the
+ * filament plan treats it the way it treats a block type -- clustered onto the
+ * slots there are, reassignable by hand, removable in the preview -- and the
+ * shape rides along as a block state, the way a stair's facing does. A hat and
+ * the head under it in the same colour therefore print in the same filament
+ * without being the same thing.
  */
 function pack(
-  cells: ReadonlyMap<string, number>,
+  cells: ReadonlyMap<string, Cell>,
   low: [number, number, number],
   high: [number, number, number],
+  thickness: number,
 ): SkinVoxels {
   if (cells.size === 0) {
     throw new Error("That skin came out empty.");
@@ -470,16 +595,21 @@ function pack(
 
   const palette: string[] = ["minecraft:air"];
   const colours: number[] = [0];
-  const entries = new Map<number, number>();
+  const shapes: ShapeBox[][] = [[]];
+  const entries = new Map<string, number>();
   const indices = new Uint32Array(width * height * depth);
 
-  for (const [key, colour] of cells) {
-    let entry = entries.get(colour);
+  for (const [key, cell] of cells) {
+    const hex = cell.colour.toString(16).padStart(6, "0");
+    const name =
+      cell.sides === null ? `skin:${hex}` : `skin:${hex}[layer=${cell.sides.join(".")}]`;
+    let entry = entries.get(name);
     if (entry === undefined) {
       entry = palette.length;
-      entries.set(colour, entry);
-      palette.push(`skin:${colour.toString(16).padStart(6, "0")}`);
-      colours.push(colour);
+      entries.set(name, entry);
+      palette.push(name);
+      colours.push(cell.colour);
+      shapes.push([cell.sides === null ? WHOLE : slabOf(cell.sides, thickness)]);
     }
     const [x, y, z] = key.split(",").map(Number) as [number, number, number];
     indices[x - low[0] + (z - low[2]) * width + (y - low[1]) * width * depth] = entry;
@@ -492,8 +622,7 @@ function pack(
       depth,
       palette,
       bytesPerIndex: palette.length > 256 ? 2 : 1,
-      // Every voxel is a whole cube, so there is nothing a shape could say.
-      shapes: null,
+      shapes,
       modelled: false,
       order: "x + z * width + y * width * depth",
     },
@@ -501,3 +630,6 @@ function pack(
     colours,
   };
 }
+
+/** A cell the body fills completely. */
+const WHOLE: ShapeBox = [0, 0, 0, 1, 1, 1];
