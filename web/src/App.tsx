@@ -552,6 +552,7 @@ function Download({
   unit,
   source,
   removed,
+  handSet,
   onPrint,
 }: {
   model: VoxelModel;
@@ -577,6 +578,8 @@ function Download({
    */
   source: { structure: StructureInfo; indices: Uint32Array } | null;
   removed: ReadonlySet<number>;
+  /** Block types put in a filament by hand, which a colour per face leaves alone. */
+  handSet: ReadonlySet<string>;
   /**
    * Told the plate, so the preview can stand the build on the same one.
    *
@@ -668,6 +671,7 @@ function Download({
     plate: plateOptions,
     slotColours: slots.map((slot) => slot.colour),
     perFace,
+    spokenFor: handSet,
   });
 
   const save = (kind: Kind): void => {
@@ -958,6 +962,15 @@ function Download({
               ? "Each face goes to the filament nearest its own colour, so a grass block is green on top and earth down the sides. A block whose faces disagree prints as a body in the commonest of them with the others laid over it a wall thick."
               : "Every face of a block prints in the one filament its type is assigned to, whatever the texture does."}
           </Text>
+          {perFace && (
+            <Text as="p" size="1" color="gray" mt="1">
+              A block whose faces all want the same filament keeps the one its type is
+              assigned to, so this only ever gives a block more colours.
+              {handSet.size > 0
+                ? ` And the ${handSet.size} ${handSet.size === 1 ? "type" : "types"} you have put in a filament by hand ${handSet.size === 1 ? "stays" : "stay"} there throughout, faces and all.`
+                : " Put a type in a filament by hand and it stays there throughout, faces and all."}
+            </Text>
+          )}
         </Box>
 
         <Box>
@@ -1487,10 +1500,23 @@ export default function App(): React.ReactElement {
     standardPalette(4).map((slot) => slot.colour),
   );
 
+  /**
+   * Block types somebody has put in a filament by hand.
+   *
+   * <p>Those print in that filament throughout, faces and all. A colour per
+   * face is a guess -- a good one, from the measured colour of each face -- and
+   * a guess does not get to overrule somebody who has said what they want.
+   *
+   * <p>Emptied whenever the palette is worked out afresh, because the filaments
+   * a choice was made against are gone by then.
+   */
+  const [handSet, setHandSet] = useState<ReadonlySet<string>>(() => new Set());
+
   /** A palette worked out afresh: the slots, and the basis they start from. */
   const planSlots = useCallback((next: readonly FilamentSlot[]) => {
     setSlots(next);
     setBasis(next.map((slot) => slot.colour));
+    setHandSet(new Set());
   }, []);
   /** How many filaments the printer has, and where their colours come from. */
   const [slotCount, setSlotCount] = useState(4);
@@ -1861,6 +1887,9 @@ export default function App(): React.ReactElement {
       }
       if (after.assignment !== before.assignment) {
         setAssignment(after.assignment);
+        if (edit.kind === "assign") {
+          setHandSet((current) => new Set(current).add(edit.blockId));
+        }
       }
       if (record) {
         setDone((current) => [...current, edit]);
@@ -2016,8 +2045,9 @@ export default function App(): React.ReactElement {
       perPaletteIndex,
       false,
       perFace ? slots.map((slot) => slot.colour) : undefined,
+      handSet,
     );
-  }, [model, slots, assignment, colourMode, perFace]);
+  }, [model, slots, assignment, colourMode, perFace, handSet]);
 
   /**
    * The plate, worked out once, with its shape and its colours kept apart.
@@ -2401,6 +2431,7 @@ export default function App(): React.ReactElement {
                     // draws with a new model it is already the new selection.
                     source={sourceRef.current}
                     removed={removed}
+                    handSet={handSet}
                     onPrint={takePrint}
                   />
                   {project !== null && (

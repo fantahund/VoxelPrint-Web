@@ -160,5 +160,36 @@ if (off.bodies.length === 1 && off.bodies[0]?.slot === 0) {
   }
 }
 
+// --- a type put in a filament by hand stays there ----------------------------
+{
+  const grouped = solidsBySlot(model, { "minecraft:grass_block": 0 }, slots.length, {
+    ...options(true),
+    spokenFor: new Set(["minecraft:grass_block"]),
+  });
+  const bodies = grouped.flatMap((group, slot) => group.map(() => slot));
+  if (bodies.length === 1 && bodies[0] === 0) {
+    ok("a type somebody put in a filament by hand prints in it throughout, faces and all");
+  } else {
+    fail(`spoken for, it still came out as ${bodies.length} bodies in filaments ${bodies.join(",")}`);
+  }
+}
+
+// --- a block of one colour does not move -------------------------------------
+{
+  // Brown all over, but assigned to the green filament: it has to stay there.
+  // Turning this on gives a block more colours; it does not re-decide a block
+  // that has only ever had one.
+  const plain = grassBlock(BROWN, BROWN);
+  const slotOf = (grouped: ReturnType<typeof solidsBySlot>): number[] =>
+    grouped.flatMap((group, slot) => group.map(() => slot));
+  const off = slotOf(solidsBySlot(plain, { "minecraft:grass_block": 1 }, slots.length, options(false)));
+  const on = slotOf(solidsBySlot(plain, { "minecraft:grass_block": 1 }, slots.length, options(true)));
+  if (off.join(",") === "1" && on.join(",") === "1") {
+    ok("a block of one colour stays in the filament its type is assigned to, either way");
+  } else {
+    fail(`one colour block: off went to [${off.join(",")}], on to [${on.join(",")}], wanted 1 both times`);
+  }
+}
+
 console.log(problems === 0 ? "\nALLE PRUEFUNGEN BESTANDEN" : `\n${problems} PROBLEME`);
 process.exit(problems === 0 ? 0 : 1);

@@ -54,6 +54,14 @@ export interface GeometryOptions {
    * many colours it is in.
    */
   readonly perFace?: boolean;
+  /**
+   * Block types somebody has put in a filament by hand.
+   *
+   * <p>Those print in that filament throughout. A colour per face is a good
+   * guess from a measured colour, and a guess does not overrule somebody who
+   * has said what they want.
+   */
+  readonly spokenFor?: ReadonlySet<string>;
 }
 
 /**
@@ -176,6 +184,9 @@ export function solidsBySlot(
    *
    * <p>Worked out once: a village asks this of tens of thousands of faces.
    */
+  /** Whether this block's type is one somebody has already put in a filament. */
+  const spoken = (paletteIndex: number): boolean =>
+    options.spokenFor?.has(model.blockIds[paletteIndex] as string) === true;
   const slotPlaces =
     options.perFace === true && options.slotColours !== undefined && options.slotColours.length > 0
       ? options.slotColours.map(toOklab)
@@ -280,7 +291,10 @@ export function solidsBySlot(
       continue;
     }
     const slot = slotOf(mesh.paletteIndex);
-    const sides = slotPlaces === null ? null : sidesOfMesh(mesh, slotPlaces, slot);
+    const sides =
+      slotPlaces === null || spoken(mesh.paletteIndex)
+        ? null
+        : sidesOfMesh(mesh, slotPlaces, slot);
     // Grouped by shape and by what each side wants as well as by filament:
     // blocks of one shape sit on the grid the same way, which is what lets them
     // be merged as whole cells, and two that want different sides cannot be one
@@ -376,13 +390,24 @@ export function solidsBySlot(
     }
     const slot = slotOf(mesh.paletteIndex);
     const faces = mesh.quads.length / 12;
-    /** Which filament each face goes to, where faces are matched one by one. */
-    const faceSlots =
-      slotPlaces === null
-        ? null
-        : Array.from({ length: faces }, (_, face) =>
-            nearestOf(mesh.faceColours[face] ?? 0x9a9a9a, slotPlaces),
-          );
+    /**
+     * Which filament each face goes to, where faces are matched one by one.
+     *
+     * <p>Null where they would all go to the same one, and then the block's own
+     * filament is used instead. A block of one colour is a block of one colour:
+     * turning this on should give a block more colours, not move a block that
+     * has only ever had one -- and the boxes above already work that way, so
+     * the two would otherwise disagree about the same block.
+     */
+    const faceSlots = ((): number[] | null => {
+      if (slotPlaces === null || spoken(mesh.paletteIndex)) {
+        return null;
+      }
+      const each = Array.from({ length: faces }, (_, face) =>
+        nearestOf(mesh.faceColours[face] ?? 0x9a9a9a, slotPlaces),
+      );
+      return each.every((one) => one === each[0]) ? null : each;
+    })();
 
     // What the block is not, it may still be made of: the boxes of its own
     // model, printed solid, with only what is left over walled. Worked out once

@@ -568,6 +568,13 @@ export function colourise(
    * assigned to, which is what the preview did before faces had their own.
    */
   slotColours?: readonly number[],
+  /**
+   * Block types somebody has put in a filament by hand, drawn in it throughout.
+   *
+   * <p>So the preview says the same thing the print will: a guess from a
+   * measured colour does not overrule somebody who has said what they want.
+   */
+  spokenFor?: ReadonlySet<string>,
 ): SceneColours {
   const boxes = new Float32Array(model.boxes * 3);
   for (let i = 0; i < model.boxes; i++) {
@@ -603,7 +610,7 @@ export function colourise(
       ? null
       : slotColours.map(toOklab);
   const corners: Array<Float32Array | null> = model.meshes.map((mesh) => {
-    if (places === null) {
+    if (places === null || spokenFor?.has(model.blockIds[mesh.paletteIndex] as string) === true) {
       return null;
     }
     const faces = mesh.faceColours.length;
@@ -615,6 +622,9 @@ export function colourise(
         differ = true;
       }
     }
+    // All one filament: leave it to the instance, which draws it in the one its
+    // type is assigned to. The switch gives a block more colours; it does not
+    // move a block that has only ever had one.
     if (!differ) {
       return null;
     }
