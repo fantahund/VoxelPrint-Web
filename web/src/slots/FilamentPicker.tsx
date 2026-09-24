@@ -17,10 +17,11 @@ import {
   colourOf,
   distance,
   loadLibrary,
+  materialsOf,
   nearest,
+  ofMaterial,
   search,
   type Library,
-  type LibraryBrand,
   type LibraryColour,
 } from "./library";
 import type { FilamentSlot } from "./filament";
@@ -58,12 +59,21 @@ export default function FilamentPicker({
   /** Which filament is being chosen, or null to choose for all of them. */
   slot: number | null;
   onPick: (index: number, colour: LibraryColour) => void;
-  /** Snap every slot to its nearest spool of this maker. */
-  onPickAll: (brand: LibraryBrand) => void;
+  /** Snap every slot to its nearest spool among these. */
+  onPickAll: (colours: readonly LibraryColour[]) => void;
 }): React.ReactElement {
   const [library, setLibrary] = useState<Library | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [brandName, setBrandName] = useState<string | null>(null);
+  /**
+   * Which material, because a print is made of one.
+   *
+   * <p>PLA and PETG want different temperatures and barely stick to each
+   * other, so a plan that mixes them is a plan for something that comes apart.
+   * There is no "any": the widest range the maker has is chosen for you, and
+   * changing it is a deliberate act.
+   */
+  const [material, setMaterial] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
   // Loaded the first time somebody opens this, and then kept.
@@ -94,26 +104,37 @@ export default function FilamentPicker({
     [library, brandName],
   );
 
+  const materials = useMemo(() => (brand === null ? [] : materialsOf(brand)), [brand]);
+
+  // A maker who does not sell the material that was chosen gets their own
+  // widest range instead, which for almost everybody is PLA.
+  useEffect(() => {
+    if (materials.length === 0) {
+      return;
+    }
+    if (material === null || !materials.some((one) => one.name === material)) {
+      setMaterial(materials[0]?.name ?? null);
+    }
+  }, [materials, material]);
+
+  /** What the picking happens among: one maker, one material. */
+  const pool = useMemo(
+    () => (brand === null ? [] : ofMaterial(brand, material)),
+    [brand, material],
+  );
+
   const want = slot === null ? null : slots[slot]?.colour ?? 0x9a9a9a;
 
   const shown = useMemo(() => {
-    if (brand === null) {
-      return [];
-    }
     if (query.trim() !== "") {
-      return search(brand, query).slice(0, SHOWN);
+      return search(pool, query).slice(0, SHOWN);
     }
     // No search: nearest to the colour this slot already has, which is what
     // somebody opening it is looking for.
-    return want === null ? brand.colours.slice(0, SHOWN) : nearest(brand, want, SHOWN);
-  }, [brand, query, want]);
+    return want === null ? pool.slice(0, SHOWN) : nearest(pool, want, SHOWN);
+  }, [pool, query, want]);
 
-  const matches = useMemo(() => {
-    if (brand === null) {
-      return [];
-    }
-    return slots.map((one) => closest(brand, one.colour));
-  }, [brand, slots]);
+  const matches = useMemo(() => slots.map((one) => closest(pool, one.colour)), [pool, slots]);
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -156,23 +177,44 @@ export default function FilamentPicker({
                 </Select.Content>
               </Select.Root>
 
+              <Select.Root
+                value={material ?? ""}
+                onValueChange={setMaterial}
+                disabled={materials.length === 0}
+              >
+                <Select.Trigger placeholder="Material" style={{ minWidth: "8rem" }} />
+                <Select.Content position="popper">
+                  {materials.map((one) => (
+                    <Select.Item key={one.name} value={one.name}>
+                      {one.name} ({one.count})
+                    </Select.Item>
+                  ))}
+                </Select.Content>
+              </Select.Root>
+
               {slot !== null && (
                 <TextField.Root
                   size="2"
                   style={{ flex: 1, minWidth: "10rem" }}
-                  placeholder="Search this maker"
+                  placeholder="Search"
                   value={query}
-                  aria-label="Search the maker's colours"
+                  aria-label="Search the colours"
                   onChange={(event) => setQuery(event.target.value)}
                 />
               )}
             </Flex>
 
+            <Text as="p" size="1" color="gray">
+              One material for the whole print: PLA and PETG want different
+              temperatures and barely stick to each other.
+            </Text>
+
             {slot === null ? (
               <>
                 <Text as="p" size="2" color="gray">
-                  Every filament moves to the nearest spool {brand?.name ?? "this maker"} sells.
-                  The build keeps the colours it was planned in until you say so.
+                  Every filament moves to the nearest {material ?? ""} spool{" "}
+                  {brand?.name ?? "this maker"} sells. The build keeps the colours it was
+                  planned in until you say so.
                 </Text>
                 <Flex direction="column" gap="1">
                   {slots.map((one, index) => {
@@ -204,15 +246,13 @@ export default function FilamentPicker({
                     </Button>
                   </Dialog.Close>
                   <Button
-                    disabled={brand === null}
+                    disabled={pool.length === 0}
                     onClick={() => {
-                      if (brand !== null) {
-                        onPickAll(brand);
-                        onOpenChange(false);
-                      }
+                      onPickAll(pool);
+                      onOpenChange(false);
                     }}
                   >
-                    Use {brand?.name ?? "these"}
+                    Use {brand?.name ?? "these"} {material ?? ""}
                   </Button>
                 </Flex>
               </>
@@ -249,7 +289,7 @@ export default function FilamentPicker({
                     ))}
                     {shown.length === 0 && (
                       <Text size="2" color="gray">
-                        Nothing of {brand?.name ?? "this maker"} matches that.
+                        No {material ?? ""} of {brand?.name ?? "this maker"} matches that.
                       </Text>
                     )}
                   </Flex>

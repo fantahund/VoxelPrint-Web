@@ -380,10 +380,10 @@ function Filaments({
         onPick={(index, colour) =>
           change(index, { colour: colourOf(colour), name: nameOf(colour) })
         }
-        onPickAll={(brand) =>
+        onPickAll={(colours) =>
           onSlots(
             slots.map((slot) => {
-              const match = closest(brand, slot.colour);
+              const match = closest(colours, slot.colour);
               return match === null ? slot : { colour: colourOf(match), name: nameOf(match) };
             }),
           )

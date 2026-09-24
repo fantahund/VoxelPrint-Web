@@ -80,42 +80,76 @@ interface Placed {
   readonly at: Oklab;
 }
 
-const placed = new WeakMap<LibraryBrand, readonly Placed[]>();
+const placed = new WeakMap<readonly LibraryColour[], readonly Placed[]>();
 
-function placeOf(brand: LibraryBrand): readonly Placed[] {
-  const known = placed.get(brand);
+function placeOf(colours: readonly LibraryColour[]): readonly Placed[] {
+  const known = placed.get(colours);
   if (known !== undefined) {
     return known;
   }
-  // Worked out once per maker and kept: a picker that sorts thirteen thousand
-  // colours on every keystroke would do this again each time.
-  const next = brand.colours.map((colour) => ({ colour, at: toOklab(colourOf(colour)) }));
-  placed.set(brand, next);
+  // Worked out once per list and kept: a picker that sorts thousands of colours
+  // on every keystroke would do this again each time.
+  const next = colours.map((colour) => ({ colour, at: toOklab(colourOf(colour)) }));
+  placed.set(colours, next);
   return next;
 }
 
 /**
- * The maker's colours, nearest to a given one first.
+ * Colours nearest to a given one first.
  *
  * <p>In Oklab, which is where a colour's distance from another means what the
  * eye means by it. The same measure the palette itself is worked out in, so
  * "the nearest spool to this" agrees with "the colour this build wanted".
+ *
+ * <p>Takes a list rather than a maker so that a filtered list -- one material,
+ * say -- is matched against just as easily as the whole catalogue.
  */
 export function nearest(
-  brand: LibraryBrand,
+  colours: readonly LibraryColour[],
   colour: number,
   limit = Infinity,
 ): readonly LibraryColour[] {
   const want = toOklab(colour);
-  return [...placeOf(brand)]
+  return [...placeOf(colours)]
     .sort((a, b) => oklabDistance(a.at, want) - oklabDistance(b.at, want))
     .slice(0, limit)
     .map((entry) => entry.colour);
 }
 
-/** The one nearest spool, or null for a maker with nothing in it. */
-export function closest(brand: LibraryBrand, colour: number): LibraryColour | null {
-  return nearest(brand, colour, 1)[0] ?? null;
+/** The one nearest spool, or null for an empty list. */
+export function closest(
+  colours: readonly LibraryColour[],
+  colour: number,
+): LibraryColour | null {
+  return nearest(colours, colour, 1)[0] ?? null;
+}
+
+/**
+ * What a maker sells and how much of each, the widest range first.
+ *
+ * <p>Worth choosing before a colour, because a print is one material: PLA and
+ * PETG want different temperatures and barely stick to each other, so a build
+ * that mixes them is a build that comes apart. The picker asks for a material
+ * first and matches within it.
+ */
+export function materialsOf(brand: LibraryBrand): ReadonlyArray<{ name: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const colour of brand.colours) {
+    counts.set(colour.material, (counts.get(colour.material) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
+/** Only the colours of one material, or all of them when none is named. */
+export function ofMaterial(
+  brand: LibraryBrand,
+  material: string | null,
+): readonly LibraryColour[] {
+  return material === null
+    ? brand.colours
+    : brand.colours.filter((colour) => colour.material === material);
 }
 
 /**
@@ -129,13 +163,16 @@ export function distance(colour: LibraryColour, want: number): number {
   return oklabDistance(toOklab(colourOf(colour)), toOklab(want));
 }
 
-/** Colours of a maker whose name, product or material contains the words. */
-export function search(brand: LibraryBrand, query: string): readonly LibraryColour[] {
+/** Colours whose name, product or material contains the words. */
+export function search(
+  colours: readonly LibraryColour[],
+  query: string,
+): readonly LibraryColour[] {
   const words = query.toLowerCase().split(/\s+/).filter((word) => word !== "");
   if (words.length === 0) {
-    return brand.colours;
+    return colours;
   }
-  return brand.colours.filter((colour) => {
+  return colours.filter((colour) => {
     const haystack = `${colour.name} ${colour.product} ${colour.material}`.toLowerCase();
     return words.every((word) => haystack.includes(word));
   });

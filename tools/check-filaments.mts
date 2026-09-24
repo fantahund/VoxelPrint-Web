@@ -12,7 +12,16 @@
  * plausible, wrong spools.
  */
 import { readFileSync } from "node:fs";
-import { closest, distance, nearest, search, colourOf, type Library } from "../web/src/slots/library.js";
+import {
+  closest,
+  colourOf,
+  distance,
+  materialsOf,
+  nearest,
+  ofMaterial,
+  search,
+  type Library,
+} from "../web/src/slots/library.js";
 
 let problems = 0;
 const fail = (m: string): void => { problems++; console.log("  FAIL " + m); };
@@ -62,7 +71,7 @@ console.log(`${library.source} ${library.version}: ${library.brands.length} make
     fail("no Bambu Lab to match against");
   } else {
     // Sorted, and sorted the right way round.
-    const sorted = nearest(bambu, 0x3366cc);
+    const sorted = nearest(bambu.colours, 0x3366cc);
     const gaps = sorted.map((colour) => distance(colour, 0x3366cc));
     if (sorted.length === bambu.colours.length && gaps.every((gap, i) => i === 0 || gap >= (gaps[i - 1] as number) - 1e-9)) {
       ok(`nearest gives back all ${sorted.length} colours, nearest first`);
@@ -73,7 +82,7 @@ console.log(`${library.source} ${library.version}: ${library.brands.length} make
     // A colour a maker sells exactly must match itself, or the measure is off.
     let wrong = 0;
     for (const colour of bambu.colours.slice(0, 200)) {
-      const match = closest(bambu, colourOf(colour));
+      const match = closest(bambu.colours, colourOf(colour));
       if (match === null || colourOf(match) !== colourOf(colour)) wrong++;
     }
     if (wrong === 0) {
@@ -92,7 +101,7 @@ console.log(`${library.source} ${library.version}: ${library.brands.length} make
     ];
     const misses: string[] = [];
     for (const [name, want, accepts] of wanted) {
-      const match = closest(bambu, want);
+      const match = closest(bambu.colours, want);
       if (match === null || !accepts(colourOf(match))) {
         misses.push(`${name} -> ${match === null ? "nothing" : `${match.name} #${match.hex}`}`);
       }
@@ -104,13 +113,13 @@ console.log(`${library.source} ${library.version}: ${library.brands.length} make
     }
 
     // Searching finds what it is asked for and nothing else.
-    const matte = search(bambu, "matte");
+    const matte = search(bambu.colours, "matte");
     if (matte.length > 0 && matte.every((c) => `${c.name} ${c.product} ${c.material}`.toLowerCase().includes("matte"))) {
       ok(`searching "matte" finds ${matte.length} colours, every one of them matte`);
     } else {
       fail(`searching "matte" gave ${matte.length}, not all matte`);
     }
-    if (search(bambu, "").length === bambu.colours.length) {
+    if (search(bambu.colours, "").length === bambu.colours.length) {
       ok("and an empty search is everything rather than nothing");
     } else {
       fail("an empty search dropped colours");
@@ -125,8 +134,11 @@ console.log(`${library.source} ${library.version}: ${library.brands.length} make
   for (const name of ["Bambu Lab", "Prusament", "Snapmaker", "FLASHFORGE", "Creality"]) {
     const brand = library.brands.find((one) => one.name === name);
     if (brand === undefined) continue;
+    // Against the maker's PLA alone, which is what somebody would really load:
+    // a plan that mixes PLA and PETG is a plan for something that comes apart.
+    const pla = ofMaterial(brand, "PLA");
     const gaps = village.map((want) => {
-      const match = closest(brand, want);
+      const match = closest(pla, want);
       return match === null ? Infinity : distance(match, want);
     });
     const worst = Math.max(...gaps);
@@ -136,6 +148,41 @@ console.log(`${library.source} ${library.version}: ${library.brands.length} make
       ok(`${name.padEnd(11)} covers a village: worst off by ${worst.toFixed(3)}, average ${mean.toFixed(3)}`);
     } else {
       fail(`${name} is off by ${worst.toFixed(3)} on one of a village's colours`);
+    }
+  }
+}
+
+// --- one material at a time --------------------------------------------------
+{
+  const bambu = library.brands.find((brand) => brand.name === "Bambu Lab");
+  if (bambu !== undefined) {
+    const materials = materialsOf(bambu);
+    const counted = materials.reduce((sum, one) => sum + one.count, 0);
+    if (counted === bambu.colours.length && materials.every((one, i) => i === 0 || one.count <= (materials[i - 1]?.count ?? 0))) {
+      ok(`a maker's materials add back up to all of it: ${materials.map((m) => `${m.name} ${m.count}`).join(", ")}`);
+    } else {
+      fail(`the materials come to ${counted} of ${bambu.colours.length}, or are out of order`);
+    }
+
+    const pla = ofMaterial(bambu, "PLA");
+    if (pla.length > 0 && pla.every((colour) => colour.material === "PLA")) {
+      ok(`filtering to PLA gives ${pla.length} colours and nothing else`);
+    } else {
+      fail(`filtering to PLA gave ${pla.length}, not all of them PLA`);
+    }
+    if (ofMaterial(bambu, null).length === bambu.colours.length) {
+      ok("and no material at all is everything rather than nothing");
+    } else {
+      fail("no material dropped colours");
+    }
+    // A match within one material must stay within it, which is the whole point.
+    const strayed = [0x6a9c3e, 0xb08a4e, 0x7a7a7a, 0xc8e4e8].filter(
+      (want) => closest(pla, want)?.material !== "PLA",
+    );
+    if (strayed.length === 0) {
+      ok("and matching inside PLA never wanders into PETG");
+    } else {
+      fail(`${strayed.length} matches inside PLA came back as something else`);
     }
   }
 }
