@@ -149,17 +149,33 @@ console.log(`a wall of ${WIDE} by ${TALL} by ${DEEP}: ${volumeOf(whole).toFixed(
   const text = new TextDecoder("latin1").decode(pdf);
   const header = text.startsWith("%PDF-1.4");
   const ends = text.trimEnd().endsWith("%%EOF");
-  const named = parts.every((piece) => text.includes(`(${piece.name})`));
-  const offsets = [...text.matchAll(/\n(\d+) 0 obj/g)].length;
-  // The cross reference has to point at something that is actually there.
+  // Four fixed objects, then a page and a stream for the parts page and one of
+  // each per step.
+  const wanted = 4 + (parts.length + 1) * 2;
+  const objects = [...text.matchAll(/\n(\d+) 0 obj/g)].length;
+  const counted = /\/Count (\d+)/.exec(text)?.[1];
+  // Every object's offset in the table has to land on that object, or a reader
+  // opens the file and finds nothing in it.
+  const offsets = [...text.matchAll(/^(\d{10}) 00000 n $/gm)].map((match) => Number(match[1]));
+  const landed = offsets.filter((offset, index) => text.startsWith(`${index + 1} 0 obj`, offset));
   const start = Number(/startxref\s+(\d+)/.exec(text)?.[1] ?? "-1");
   const pointsAtXref = text.slice(start, start + 4) === "xref";
-  if (header && ends && named && offsets === 6 && pointsAtXref) {
-    ok(`the sheet is a PDF of ${pdf.length} bytes naming all ${parts.length} tiles`);
+  if (
+    header &&
+    ends &&
+    objects === wanted &&
+    counted === String(parts.length + 1) &&
+    landed.length === wanted &&
+    pointsAtXref
+  ) {
+    ok(
+      `the booklet is a PDF of ${(pdf.length / 1024).toFixed(1)} kB: a page of parts and ` +
+        `${parts.length} steps, ${wanted} objects, every offset landing on its object`,
+    );
   } else {
     fail(
-      `the sheet: header ${header}, end ${ends}, all named ${named}, ` +
-        `${offsets} objects, xref points at "${text.slice(start, start + 4)}"`,
+      `the booklet: header ${header}, end ${ends}, ${objects} objects of ${wanted}, ` +
+        `${counted} pages, ${landed.length} offsets landed, xref points at "${text.slice(start, start + 4)}"`,
     );
   }
 }
