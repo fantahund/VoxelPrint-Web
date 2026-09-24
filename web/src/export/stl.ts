@@ -8,6 +8,7 @@ import {
   spanOf,
   TOO_THIN,
   type GeometryOptions,
+  type Solid,
   type Point,
 } from "./geometry";
 
@@ -41,6 +42,8 @@ const HEADER_BYTES = 80;
 const COUNT_BYTES = 4;
 
 export interface StlOptions extends GeometryOptions {
+  /** The solids to write, where the caller has already worked them out. */
+  readonly grouped?: readonly (readonly Solid[])[];
   /** Written into the header, as far as it fits. */
   readonly name: string;
 }
@@ -61,7 +64,7 @@ export function buildStl(
 ): StlFile {
   // One group, so every filament's share lands together. The assignment still
   // goes in, because it is what decides that a block is printed at all.
-  const solids = solidsBySlot(model, assignment, slots.length, options).flat();
+  const solids = (options.grouped ?? solidsBySlot(model, assignment, slots.length, options)).flat();
 
   const bounds = newBounds();
   const triangles = solids.length * FACES.length * 2;

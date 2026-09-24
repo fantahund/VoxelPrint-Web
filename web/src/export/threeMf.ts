@@ -98,6 +98,15 @@ export interface ThreeMfOptions extends GeometryOptions {
    * decision made here.
    */
   readonly carryColours?: boolean;
+  /**
+   * The solids to write, where the caller has already worked them out.
+   *
+   * <p>What lets a build be cut into pieces and each piece written as its own
+   * file: the cutting happens once, on the whole build, and each piece is
+   * handed back here rather than worked out again from a model it is no longer
+   * the whole of.
+   */
+  readonly grouped?: readonly (readonly Solid[])[];
 }
 
 export interface ThreeMfFile {
@@ -124,7 +133,7 @@ export function buildThreeMf(
   assignment: Readonly<Record<string, number>>,
   options: ThreeMfOptions,
 ): ThreeMfFile {
-  const grouped = solidsBySlot(model, assignment, slots.length, options);
+  const grouped = options.grouped ?? solidsBySlot(model, assignment, slots.length, options);
 
   const bounds = newBounds();
   const objects: string[] = [];

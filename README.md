@@ -134,6 +134,8 @@ fault. **Run them after any change under `web/src/export/`.**
 | `web/` | React, three.js, Radix Themes. Upload, preview, editor, palette, export. |
 | `web/src/export/geometry.ts` | everything the 3MF and STL writers share, which is all of the shape and none of the file |
 | `tools/` | the checkers, and the script that refreshes the filament library |
+| `web/src/export/split.ts` | cutting a build into things that fit: one file per filament, or tiles for a bed |
+| `web/src/export/instructions.ts` | the sheet that comes with them, written out as PDF by hand |
 | `web/src/slots/` | how many colours the printer has, which ones, and which spool each of them really is |
 | `web/public/filaments.json` | 152 makers and 13 730 colours, the floor under what the server keeps fresh |
 

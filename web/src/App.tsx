@@ -60,6 +60,8 @@ import { buildThreeMf, type ThreeMfFile } from "./export/threeMf";
 import { buildStl, type StlFile } from "./export/stl";
 import type { Geometry, GeometryOptions } from "./export/geometry";
 import { inspect, NOZZLE, type Findings } from "./export/checks";
+import { buildKit } from "./export/kit";
+import type { Split } from "./export/split";
 import {
   labelFit,
   plateOf,
@@ -580,13 +582,21 @@ const MEDIA_TYPES: Readonly<Record<Kind, string>> = {
   stl: "model/stl",
 };
 
+/** A build cut into pieces arrives as one archive, with the sheet inside it. */
+const KIT_TYPE = "application/zip";
+
 /**
  * Whichever file was built last, and which kind it was.
  *
  * <p>An STL has no parts, so it counts as one: the summary then reads the same
  * way for both without the two needing separate wording.
  */
-type Built = (ThreeMfFile | StlFile) & { readonly kind: Kind; readonly parts: number };
+type Built = (ThreeMfFile | StlFile) & {
+  readonly kind: Kind;
+  readonly parts: number;
+  /** How many separate things to print, where the build was cut up. */
+  readonly pieces?: number;
+};
 
 /**
  * Writes the build out as a 3MF or an STL file.
@@ -687,6 +697,14 @@ function Download({
    */
   const [findings, setFindings] = useState<Findings | null>(null);
   const [nozzle, setNozzle] = useState(NOZZLE);
+  const [split, setSplit] = useState<Split>("off");
+  /**
+   * How large the bed is, in millimetres, for a build cut down to fit it.
+   *
+   * <p>A 256 cube is the commonest bed there is, and a number somebody has to
+   * correct is a number they will read.
+   */
+  const [bed, setBed] = useState<[number, number, number]>([256, 256, 256]);
   /** Which section is unfolded, at most one, so the panel stays a panel. */
   const [section, setSection] = useState<string | null>(null);
   const opener = (which: string) => (open: boolean) => setSection(open ? which : null);
@@ -716,7 +734,10 @@ function Download({
   // whatever was found about it too.
   useEffect(() => {
     setFile(null);
-  }, [model, slots, assignment, millimetres, geometry, wall, carryColours, plateOptions, perFace]);
+  }, [
+    model, slots, assignment, millimetres, geometry, wall, carryColours, plateOptions, perFace,
+    split, bed,
+  ]);
   useEffect(() => {
     setFindings(null);
   }, [model, millimetres, geometry, wall, plateOptions, nozzle, perFace, slots]);
@@ -738,17 +759,34 @@ function Download({
     setFailure(null);
     try {
       const options = { ...optionsOf(), name, carryColours };
-      const built: Built =
-        kind === "3mf"
-          ? { kind, ...buildThreeMf(model, slots, assignment, options) }
-          : { kind, parts: 1, ...buildStl(model, slots, assignment, options) };
+      let built: Built;
+      let type = MEDIA_TYPES[kind];
+      let suffix: string = kind;
+      if (split === "off") {
+        built =
+          kind === "3mf"
+            ? { kind, ...buildThreeMf(model, slots, assignment, options) }
+            : { kind, parts: 1, ...buildStl(model, slots, assignment, options) };
+      } else {
+        const kit = buildKit(model, slots, assignment, kind, name, { ...options, split, bed });
+        built = {
+          kind,
+          parts: slots.length,
+          pieces: kit.pieces,
+          bytes: kit.bytes,
+          triangles: kit.triangles,
+          size: kit.largest as [number, number, number],
+        };
+        type = KIT_TYPE;
+        suffix = "zip";
+      }
       setFile(built);
 
-      const blob = new Blob([built.bytes as BlobPart], { type: MEDIA_TYPES[kind] });
+      const blob = new Blob([built.bytes as BlobPart], { type });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `${name}.${kind}`;
+      link.download = `${name}.${suffix}`;
       link.click();
       // Freed on the next turn of the loop, once the browser has taken it.
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
@@ -1057,11 +1095,88 @@ function Download({
           </Text>
         </Section>
 
+        <Section
+          title="Splitting"
+          summary={
+            split === "off"
+              ? "One piece"
+              : split === "colour"
+                ? "One file per filament"
+                : `Tiles for a ${bed.join(" x ")} mm bed`
+          }
+          open={section === "splitting"}
+          onOpen={opener("splitting")}
+        >
+          <Flex gap="2" wrap="wrap">
+            <Button
+              size="1"
+              variant={split === "off" ? "solid" : "soft"}
+              onClick={() => setSplit("off")}
+            >
+              Don't
+            </Button>
+            <Button
+              size="1"
+              variant={split === "colour" ? "solid" : "soft"}
+              onClick={() => setSplit("colour")}
+            >
+              By colour
+            </Button>
+            <Button
+              size="1"
+              variant={split === "bed" ? "solid" : "soft"}
+              onClick={() => setSplit("bed")}
+            >
+              To fit the bed
+            </Button>
+          </Flex>
+
+          {split === "bed" && (
+            <Flex gap="2" mt="2">
+              {/* The printer's axes: across the bed, into it, and up off it. */}
+              {(["across", "deep", "up"] as const).map((what, axis) => (
+                <Box key={what} style={{ flex: 1, minWidth: "4rem" }}>
+                  <Text as="div" size="1" color="gray" mb="1">
+                    {what}
+                  </Text>
+                  <TextField.Root
+                    size="1"
+                    type="number"
+                    min={20}
+                    max={2000}
+                    step={10}
+                    value={String(bed[axis])}
+                    aria-label={`How far the bed reaches ${what}, in millimetres`}
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      if (Number.isFinite(next) && next >= 20) {
+                        setBed((current) => {
+                          const wanted = [...current] as [number, number, number];
+                          wanted[axis] = Math.min(next, 2000);
+                          return wanted;
+                        });
+                      }
+                    }}
+                  />
+                </Box>
+              ))}
+            </Flex>
+          )}
+
+          <Text as="p" size="1" color="gray" mt="1">
+            {split === "off"
+              ? "One file, printed in one go, which wants a printer with as many filaments as the plan has."
+              : split === "colour"
+                ? "One file per filament, so a printer with one extruder can still make this: print each in its own colour and glue them together. A sheet saying which is which comes in the archive."
+                : "Cut into tiles that fit, each still whole in itself, with a plan of where each one goes. The seams are straight lines to glue along."}
+          </Text>
+        </Section>
+
         <Separator size="4" />
 
         <Flex gap="2">
           <Button style={{ flex: 1 }} onClick={() => save("3mf")}>
-            Download .3mf
+            {split === "off" ? "Download .3mf" : "Download .3mf set"}
           </Button>
           <Button style={{ flex: 1 }} variant="soft" onClick={() => save("stl")}>
             .stl
@@ -1075,9 +1190,18 @@ function Download({
             </>
           ) : (
             <>
-              {file.size[0]} × {file.size[1]} × {file.size[2]} mm.{" "}
+              {file.pieces === undefined ? (
+                <>
+                  {file.size[0]} × {file.size[1]} × {file.size[2]} mm.{" "}
+                </>
+              ) : (
+                <>
+                  {file.pieces} {file.pieces === 1 ? "piece" : "pieces"}, the largest{" "}
+                  {file.size[0]} × {file.size[1]} × {file.size[2]} mm.{" "}
+                </>
+              )}
               {numberFormat.format(file.triangles)} triangles
-              {file.kind === "3mf" ? (
+              {file.pieces !== undefined ? null : file.kind === "3mf" ? (
                 <>
                   {" "}
                   across {file.parts} {file.parts === 1 ? "part" : "parts"}
@@ -1085,7 +1209,8 @@ function Download({
               ) : (
                 <> in one body</>
               )}
-              , {bytes(file.bytes.length)} of .{file.kind}.
+              , {bytes(file.bytes.length)} of{" "}
+              {file.pieces === undefined ? `.${file.kind}` : "archive"}.
             </>
           )}
         </Text>
