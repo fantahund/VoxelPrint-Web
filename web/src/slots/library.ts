@@ -59,7 +59,19 @@ export function loadLibrary(): Promise<Library> {
         }
         const library = (await response.json()) as Library;
         if (Array.isArray(library.brands) && library.brands.length > 0) {
-          return library;
+          // Sorted here rather than trusted to arrive sorted. The file that
+          // ships is in this order already, but a server that has not been
+          // rebuilt is not, and neither is whatever the database decides to do
+          // next: this is a list somebody looks their own maker up in, and
+          // where it came from is not their problem.
+          return {
+            ...library,
+            brands: [...library.brands].sort((a, b) =>
+              // Case is not a sort order: eSUN belongs under E and colorFabb
+              // under C, not in a clump of their own after Z.
+              a.name.localeCompare(b.name, "en", { sensitivity: "base" }),
+            ),
+          };
         }
       } catch {
         // The next one, or the throw below.
