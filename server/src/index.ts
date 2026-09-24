@@ -4,6 +4,8 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import Fastify from "fastify";
 import { config } from "./config.js";
+import { FilamentLibrary } from "./filaments/library.js";
+import { registerFilamentRoutes } from "./routes/filaments.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerSkinRoutes } from "./routes/skins.js";
 import { ProjectStore } from "./storage/projectStore.js";
@@ -28,6 +30,19 @@ app.get("/api/health", async () => ({ status: "ok" }));
 
 registerProjectRoutes(app, store);
 registerSkinRoutes(app);
+
+/**
+ * The filament library, as new as the database is.
+ *
+ * <p>Checked on start and then once a day, which is how often the database
+ * rebuilds itself. A check that finds nothing new costs one conditional
+ * request and no body, and a check that cannot reach the database at all costs
+ * a line in the log: the snapshot that shipped with the site keeps answering
+ * either way.
+ */
+const filaments = await FilamentLibrary.load(config.webRoot, (message) => app.log.info(message));
+registerFilamentRoutes(app, filaments);
+filaments.keepFresh(24 * 60 * 60 * 1000, (message) => app.log.info(message));
 
 /**
  * Serves the built frontend, when there is one.

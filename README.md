@@ -134,32 +134,42 @@ fault. **Run them after any change under `web/src/export/`.**
 | `web/` | React, three.js, Radix Themes. Upload, preview, editor, palette, export. |
 | `web/src/export/geometry.ts` | everything the 3MF and STL writers share, which is all of the shape and none of the file |
 | `tools/` | the checkers, and the script that refreshes the filament library |
-| `web/public/filaments.json` | 152 makers and 9432 buyable colours, fetched by the page rather than bundled into it |
+| `web/public/filaments.json` | 152 makers and 13 730 colours, the floor under what the server keeps fresh |
 
 ---
 
 ## The filament library
 
-`web/public/filaments.json` is a snapshot of the
-[Open Filament Database](https://openfilamentdatabase.org/) — 152 makers, 9432
-distinct colours, every one with a hex value. It is committed rather than
-fetched at run time: a picker that called somebody else's API would break when
-that API moved, fail behind a filter, and tell a third party what everybody is
-printing.
+Which colours people can actually buy, from the
+[Open Filament Database](https://openfilamentdatabase.org/) — **152 makers,
+13 730 colours**, every one with a hex value and a density.
 
-Refresh it with:
+Two copies, because neither alone is right:
 
-```bash
-npx tsx tools/fetch-filaments.mts
-```
+- `web/public/filaments.json` is committed. It answers before the first refresh
+  has finished, on a machine with no way out to the internet, and on the day the
+  database moves house. Refresh it with `npx tsx tools/fetch-filaments.mts`.
+- The **server** fetches the database on start and once a day, trims it, and
+  serves that from `/api/filaments` instead. The database answers conditional
+  requests, so a check that finds nothing new costs one round trip and no body.
 
-which pulls the database, drops discontinued spools, keeps one entry per colour
-per maker, and writes the file with the source's own version in it.
+The browser never fetches the database itself, and that is a measurement rather
+than a preference: the whole export is 14 MB, 3.1 MB over the wire, against
+144 kB for what is left after the trimming. Twenty-odd times the traffic per
+visitor, for data that changes by a handful of entries a month.
 
-The Open Filament Database is MIT licensed, data included. The colours are the
+What the trimming drops is the part nobody here reads — ids, spool sizes,
+purchase links, barcodes, stores. It keeps every colour of every product,
+including the ones no longer sold, because the spool somebody already has on
+the shelf is the very one they want to pick; those are marked rather than
+dropped. It also keeps the same black in matte and in silk as two entries,
+because that is a difference anybody printing can see: `#000000` alone comes
+from ABS, ABS-GF, ASA, ASA-CF and Matte ASA CF.
+
+The Open Filament Database is MIT licensed, data included. Its colours are the
 makers' own figures rather than measurements of printed filament;
 [filamentcolors.xyz](https://filamentcolors.xyz) measures its swatches with a
-colorimeter and is the better source where the two overlap, at a quarter of the
+colorimeter and is the better source where the two overlap, at a fifth of the
 coverage and under CC-BY.
 
 ---
