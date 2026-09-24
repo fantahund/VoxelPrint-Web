@@ -133,10 +133,39 @@ fault. **Run them after any change under `web/src/export/`.**
 | `server/` | Fastify. Takes the upload, checks it, stores it, serves the structure, the packed indices and the models. Its own NBT reader, with every bound checked *before* the entry is unpacked, so an archive cannot claim to be small and arrive large. |
 | `web/` | React, three.js, Radix Themes. Upload, preview, editor, palette, export. |
 | `web/src/export/geometry.ts` | everything the 3MF and STL writers share, which is all of the shape and none of the file |
-| `tools/` | the two checkers |
+| `tools/` | the checkers, and the script that refreshes the filament library |
+| `web/public/filaments.json` | 152 makers and 9432 buyable colours, fetched by the page rather than bundled into it |
+
+---
+
+## The filament library
+
+`web/public/filaments.json` is a snapshot of the
+[Open Filament Database](https://openfilamentdatabase.org/) — 152 makers, 9432
+distinct colours, every one with a hex value. It is committed rather than
+fetched at run time: a picker that called somebody else's API would break when
+that API moved, fail behind a filter, and tell a third party what everybody is
+printing.
+
+Refresh it with:
+
+```bash
+npx tsx tools/fetch-filaments.mts
+```
+
+which pulls the database, drops discontinued spools, keeps one entry per colour
+per maker, and writes the file with the source's own version in it.
+
+The Open Filament Database is MIT licensed, data included. The colours are the
+makers' own figures rather than measurements of printed filament;
+[filamentcolors.xyz](https://filamentcolors.xyz) measures its swatches with a
+colorimeter and is the better source where the two overlap, at a quarter of the
+coverage and under CC-BY.
 
 ---
 
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+The filament library is from the Open Filament Database, also MIT.
