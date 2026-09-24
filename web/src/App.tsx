@@ -305,19 +305,18 @@ function Filaments({
           <Button size="1" variant="outline" onClick={onReassign}>
             Re-assign
           </Button>
-          <Tooltip content="Move every filament to the nearest spool a maker actually sells">
-            <Button
-              size="1"
-              variant="outline"
-              onClick={() => {
-                setPicking(null);
-                setOpen(true);
-              }}
-            >
-              Real filament
-            </Button>
-          </Tooltip>
         </Flex>
+
+        <Button
+          size="2"
+          variant="surface"
+          onClick={() => {
+            setPicking(null);
+            setOpen(true);
+          }}
+        >
+          Choose a maker and real spools{"\u2026"}
+        </Button>
 
         {slots.length < count && (
           <Callout.Root size="1" color="amber">
@@ -349,22 +348,28 @@ function Filaments({
                 aria-label={`Name of filament ${index + 1}`}
                 onChange={(event) => change(index, { name: event.target.value })}
               />
-              <Tooltip content="Choose a spool somebody sells">
-                <IconButton
+              <Tooltip content={`Choose a real spool for filament ${index + 1}`}>
+                <Button
                   size="1"
                   variant="soft"
-                  aria-label={`Choose a real filament for slot ${index + 1}`}
+                  aria-label={`Choose a real spool for filament ${index + 1}`}
                   onClick={() => {
                     setPicking(index);
                     setOpen(true);
                   }}
                 >
-                  {"\u25A3"}
-                </IconButton>
+                  Spool
+                </Button>
               </Tooltip>
             </Flex>
           ))}
         </Flex>
+
+        <Text as="p" size="1" color="gray">
+          These are colours worked out for this build, not spools anybody sells.
+          Press Spool beside one to set it to a real filament, or the button
+          above to put the whole build on what a single maker stocks.
+        </Text>
       </Flex>
 
       <FilamentPicker
