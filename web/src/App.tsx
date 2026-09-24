@@ -58,7 +58,8 @@ import { apply, describe, invert, removal, type Edit, type EditorState } from ".
 import type { Pick } from "./viewer/Viewer";
 import { buildThreeMf, type ThreeMfFile } from "./export/threeMf";
 import { buildStl, type StlFile } from "./export/stl";
-import type { Geometry } from "./export/geometry";
+import type { Geometry, GeometryOptions } from "./export/geometry";
+import { inspect, NOZZLE, type Findings } from "./export/checks";
 import {
   labelFit,
   plateOf,
@@ -548,6 +549,8 @@ function Download({
   name,
   startingSize,
   unit,
+  source,
+  removed,
   onPlate,
 }: {
   model: VoxelModel;
@@ -565,6 +568,14 @@ function Download({
   startingSize: number;
   /** What one cell is called, which is not a block when it is a texel. */
   unit: string;
+  /**
+   * The selection itself, for the checks.
+   *
+   * <p>The model no longer holds what was removed or what is walled in, and
+   * both matter to whether a build is one piece.
+   */
+  source: { structure: StructureInfo; indices: Uint32Array } | null;
+  removed: ReadonlySet<number>;
   /**
    * Told the plate, so the preview can stand the build on the same one.
    *
@@ -592,6 +603,15 @@ function Download({
   const [carryColours, setCarryColours] = useState(true);
   const [file, setFile] = useState<Built | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  /**
+   * What the checks found, once somebody has asked.
+   *
+   * <p>Asked rather than answered by itself: walking a big selection block by
+   * block and building every body of it is a second's work, and a panel that
+   * did it on every keystroke would be a panel nobody could type in.
+   */
+  const [findings, setFindings] = useState<Findings | null>(null);
+  const [nozzle, setNozzle] = useState(NOZZLE);
 
   /** The plate as the rest of the site wants it, whole rather than in pieces. */
   const plateOptions: PlateOptions = useMemo(
@@ -611,25 +631,29 @@ function Download({
 
   useEffect(() => onPlate(plateOptions, millimetres), [onPlate, plateOptions, millimetres]);
 
-  // A fresh plan or a different setting makes whatever was built stale.
-  useEffect(
-    () => setFile(null),
-    [model, slots, assignment, millimetres, geometry, wall, carryColours, plateOptions],
-  );
+  // A fresh plan or a different setting makes whatever was built stale, and
+  // whatever was found about it too.
+  useEffect(() => {
+    setFile(null);
+  }, [model, slots, assignment, millimetres, geometry, wall, carryColours, plateOptions]);
+  useEffect(() => {
+    setFindings(null);
+  }, [model, millimetres, geometry, wall, plateOptions, nozzle]);
 
   const printed = plateSpan(model, millimetres, plateOptions).map(Math.round);
+
+  /** What both the writers and the checks work from. */
+  const optionsOf = (): GeometryOptions => ({
+    millimetresPerBlock: millimetres,
+    geometry,
+    wallMillimetres: wall,
+    plate: plateOptions,
+  });
 
   const save = (kind: Kind): void => {
     setFailure(null);
     try {
-      const options = {
-        millimetresPerBlock: millimetres,
-        geometry,
-        wallMillimetres: wall,
-        plate: plateOptions,
-        name,
-        carryColours,
-      };
+      const options = { ...optionsOf(), name, carryColours };
       const built: Built =
         kind === "3mf"
           ? { kind, ...buildThreeMf(model, slots, assignment, options) }
@@ -957,8 +981,113 @@ function Download({
             <Callout.Text>{failure}</Callout.Text>
           </Callout.Root>
         )}
+
+        <Separator size="4" />
+
+        <Box>
+          <Flex align="center" justify="between" gap="2" mb="1">
+            <Text as="div" size="1" weight="medium">
+              Before you print
+            </Text>
+            <TextField.Root
+              size="1"
+              type="number"
+              min={0.1}
+              max={2}
+              step={0.1}
+              style={{ width: "6rem" }}
+              value={String(nozzle)}
+              aria-label="Nozzle width in millimetres"
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                if (Number.isFinite(next) && next > 0) {
+                  setNozzle(Math.min(next, 2));
+                }
+              }}
+            >
+              <TextField.Slot side="left">
+                <Text size="1" color="gray">
+                  Nozzle
+                </Text>
+              </TextField.Slot>
+            </TextField.Root>
+          </Flex>
+
+          {findings === null ? (
+            <>
+              <Button
+                size="1"
+                variant="soft"
+                style={{ width: "100%" }}
+                disabled={source === null}
+                onClick={() => {
+                  if (source !== null) {
+                    setFindings(
+                      inspect(model, source.structure, source.indices, removed, optionsOf(), nozzle),
+                    );
+                  }
+                }}
+              >
+                Check it
+              </Button>
+              <Text as="p" size="1" color="gray" mt="1">
+                Whether it comes off the bed as one thing, whether any of it is finer than the
+                nozzle can draw, and how much of it hangs over nothing.
+              </Text>
+            </>
+          ) : (
+            <Flex direction="column" gap="1">
+              <Finding
+                bad={findings.loose > 0}
+                good={`One piece, all ${numberFormat.format(findings.blocks)} blocks of it.`}
+                bad_={`${findings.pieces.length} separate pieces: ${numberFormat.format(
+                  findings.loose,
+                )} ${findings.loose === 1 ? "block is" : "blocks are"} not joined to the rest, and will arrive loose.`}
+              />
+              <Finding
+                bad={findings.thin > 0}
+                good={`Nothing finer than the nozzle; the thinnest body is ${findings.thinnest.toFixed(2)} mm.`}
+                bad_={`${numberFormat.format(findings.thin)} of ${numberFormat.format(
+                  findings.bodies,
+                )} bodies are thinner than ${nozzle} mm, down to ${findings.thinnest.toFixed(
+                  2,
+                )} mm. A bigger ${unit.toLowerCase()} or a thicker wall would fix it.`}
+              />
+              <Finding
+                bad={findings.overhanging > findings.blocks / 4}
+                good={`${numberFormat.format(findings.overhanging)} blocks stand on nothing, which supports will hold easily.`}
+                bad_={`${numberFormat.format(findings.overhanging)} blocks stand on nothing — a quarter of the build. Expect a lot of supports and a rough underside.`}
+              />
+              <Button size="1" variant="ghost" onClick={() => setFindings(null)}>
+                Check again
+              </Button>
+            </Flex>
+          )}
+        </Box>
       </Flex>
     </Panel>
+  );
+}
+
+/** One line of the report, said one way when it is fine and another when it is not. */
+function Finding({
+  bad,
+  good,
+  bad_,
+}: {
+  bad: boolean;
+  good: string;
+  bad_: string;
+}): React.ReactElement {
+  return (
+    <Flex gap="2" align="start">
+      <Text size="1" color={bad ? "amber" : "green"} style={{ lineHeight: "1.5" }}>
+        {bad ? "\u25B2" : "\u2713"}
+      </Text>
+      <Text size="1" color={bad ? undefined : "gray"}>
+        {bad ? bad_ : good}
+      </Text>
+    </Flex>
   );
 }
 
@@ -2217,6 +2346,11 @@ export default function App(): React.ReactElement {
                     }
                     startingSize={skin === null ? 10 : 2}
                     unit={skin === null ? "Block" : "Voxel"}
+                    // Read at render rather than held twice: the reference is
+                    // set in the same breath as the model, so by the time this
+                    // draws with a new model it is already the new selection.
+                    source={sourceRef.current}
+                    removed={removed}
                     onPlate={takePlate}
                   />
                   {project !== null && (
