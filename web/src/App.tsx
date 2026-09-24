@@ -601,6 +601,15 @@ function Download({
    * the box.
    */
   const [carryColours, setCarryColours] = useState(true);
+  /**
+   * Whether a face may print in a different filament from the rest of its block.
+   *
+   * <p>On by default. A grass block is green on top and earth down the sides,
+   * and printed in one filament it is a lie either way round; the cost is a
+   * body with a wall thick skin on the sides that disagree, which is what a
+   * multi-colour printer is for.
+   */
+  const [perFace, setPerFace] = useState(true);
   const [file, setFile] = useState<Built | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   /**
@@ -635,10 +644,10 @@ function Download({
   // whatever was found about it too.
   useEffect(() => {
     setFile(null);
-  }, [model, slots, assignment, millimetres, geometry, wall, carryColours, plateOptions]);
+  }, [model, slots, assignment, millimetres, geometry, wall, carryColours, plateOptions, perFace]);
   useEffect(() => {
     setFindings(null);
-  }, [model, millimetres, geometry, wall, plateOptions, nozzle]);
+  }, [model, millimetres, geometry, wall, plateOptions, nozzle, perFace, slots]);
 
   const printed = plateSpan(model, millimetres, plateOptions).map(Math.round);
 
@@ -648,6 +657,8 @@ function Download({
     geometry,
     wallMillimetres: wall,
     plate: plateOptions,
+    slotColours: slots.map((slot) => slot.colour),
+    perFace,
   });
 
   const save = (kind: Kind): void => {
@@ -925,6 +936,20 @@ function Download({
         </Box>
 
         <Separator size="4" />
+
+        <Box>
+          <Text as="label" size="1">
+            <Flex gap="2" align="center">
+              <Checkbox checked={perFace} onCheckedChange={(next) => setPerFace(next === true)} />
+              A colour per face
+            </Flex>
+          </Text>
+          <Text as="p" size="1" color="gray" mt="1">
+            {perFace
+              ? "Each face goes to the filament nearest its own colour, so a grass block is green on top and earth down the sides. A block whose faces disagree prints as a body in the commonest of them with the others laid over it a wall thick."
+              : "Every face of a block prints in the one filament its type is assigned to, whatever the texture does."}
+          </Text>
+        </Box>
 
         <Box>
           <Text as="label" size="1">

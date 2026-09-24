@@ -43,6 +43,15 @@ export interface BlockMesh {
   readonly normals: Float32Array;
   /** Material colour per corner, three linear floats. */
   readonly colours: Float32Array;
+  /**
+   * The measured colour of each face, one 0xRRGGBB per quad.
+   *
+   * <p>Kept beside the per corner colours, which are linear and for the screen.
+   * These are what a face is matched to a filament by, and matching wants the
+   * number the exporter measured rather than one that has been through a
+   * colour space and back.
+   */
+  readonly faceColours: Uint32Array;
   /** Where the blocks of this state stand, three floats each. */
   readonly offsets: Float32Array;
   readonly blocks: number;
@@ -368,6 +377,7 @@ function buildMesh(
   const positions = new Float32Array(corners * 3);
   const normals = new Float32Array(corners * 3);
   const colours = new Float32Array(corners * 3);
+  const faceColours = new Uint32Array(faces.length);
   const quads = new Float32Array(faces.length * 12);
 
   // Two triangles from four corners, going round the face the way it was wound.
@@ -379,6 +389,7 @@ function buildMesh(
     quads.set(v.slice(0, 12), index * 12);
     const normal = normalOf(v, face.direction);
     const colour = models?.materials[face.material]?.colour ?? UNKNOWN_COLOUR;
+    faceColours[index] = colour >>> 0;
     const red = srgbToLinear(((colour >> 16) & 0xff) / 255);
     const green = srgbToLinear(((colour >> 8) & 0xff) / 255);
     const blue = srgbToLinear((colour & 0xff) / 255);
@@ -403,6 +414,7 @@ function buildMesh(
     quads,
     normals,
     colours,
+    faceColours,
     offsets: Float32Array.from(offsets),
     blockIndices: Uint32Array.from(blockIndices),
     blocks: offsets.length / 3,

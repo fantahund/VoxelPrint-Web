@@ -1,3 +1,4 @@
+import { oklabDistance, toOklab, type Oklab } from "../colour";
 import type { VoxelModel } from "../viewer/buildVoxels";
 import { plateOf, type PlateOptions, type PlatePart } from "./plate";
 
@@ -34,6 +35,25 @@ export interface GeometryOptions {
   readonly wallMillimetres: number;
   /** The slab to stand the build on, where there is one. */
   readonly plate?: PlateOptions;
+  /**
+   * What colour each filament prints in, for matching a face to the nearest.
+   *
+   * <p>Without it a block prints in one filament throughout, which is what this
+   * did before there was a choice.
+   */
+  readonly slotColours?: readonly number[];
+  /**
+   * Whether a face may print in a different filament from the rest of its
+   * block.
+   *
+   * <p>A grass block is green on top and earth down the sides, and printed in
+   * one filament it is a lie either way. With this on, each face goes to the
+   * filament nearest its own measured colour, and a block whose faces disagree
+   * is printed as a body in the commonest of them with the others laid over it
+   * a wall thick. The outside is the same shape either way; what changes is how
+   * many colours it is in.
+   */
+  readonly perFace?: boolean;
 }
 
 /**
@@ -151,6 +171,15 @@ export function solidsBySlot(
   const shelled: Facet[] = [];
   /** The wall thickness in blocks, for the parts of a model measured that way. */
   const wallInBlocks = Math.max(options.wallMillimetres, TOO_THIN) / scale;
+  /**
+   * Where each filament sits in Oklab, or null when faces are not matched.
+   *
+   * <p>Worked out once: a village asks this of tens of thousands of faces.
+   */
+  const slotPlaces =
+    options.perFace === true && options.slotColours !== undefined && options.slotColours.length > 0
+      ? options.slotColours.map(toOklab)
+      : null;
   /** Solid boxes per filament, joined across shapes once they are all in. */
   const volumes: Point[][][] = Array.from({ length: slotCount }, () => []);
   const boxCount = options.geometry === "shell" ? model.boxes : model.solids;
@@ -237,7 +266,13 @@ export function solidsBySlot(
   }
   const boxed = new Map<
     string,
-    { slot: number; shape: Box[]; cells: Array<[number, number, number]> }
+    {
+      slot: number;
+      /** A filament per side where they disagree, or null where they do not. */
+      sides: number[] | null;
+      shape: Box[];
+      cells: Array<[number, number, number]>;
+    }
   >();
   for (const mesh of model.meshes) {
     const shape = asShape.get(mesh.paletteIndex) ?? null;
@@ -245,10 +280,13 @@ export function solidsBySlot(
       continue;
     }
     const slot = slotOf(mesh.paletteIndex);
-    // Grouped by shape as well as filament: blocks of one shape sit on the grid
-    // the same way, which is what lets them be merged as whole cells.
-    const key = `${slot}|${shape.map((box) => box.join(",")).join(";")}`;
-    const group = boxed.get(key) ?? { slot, shape, cells: [] };
+    const sides = slotPlaces === null ? null : sidesOfMesh(mesh, slotPlaces, slot);
+    // Grouped by shape and by what each side wants as well as by filament:
+    // blocks of one shape sit on the grid the same way, which is what lets them
+    // be merged as whole cells, and two that want different sides cannot be one
+    // box however alike their shape.
+    const key = `${slot}|${sides?.join(",") ?? ""}|${shape.map((box) => box.join(",")).join(";")}`;
+    const group = boxed.get(key) ?? { slot, sides, shape, cells: [] };
     for (let block = 0; block < mesh.blocks; block++) {
       group.cells.push([
         Math.round((mesh.offsets[block * 3] as number) + model.size.width / 2),
@@ -259,7 +297,7 @@ export function solidsBySlot(
     boxed.set(key, group);
   }
 
-  for (const { slot, shape, cells } of boxed.values()) {
+  for (const { slot, sides, shape, cells } of boxed.values()) {
     // Each box of the shape is joined on its own terms. A stair's lower slab
     // runs the whole width of its cell and joins with the one beside it; its
     // step does not run the whole depth and does not.
@@ -274,18 +312,48 @@ export function solidsBySlot(
 
       for (const box of mergeBoxes(cells, whole)) {
         const [x0, y0, z0, x1, y1, z1] = box;
-        const corners = CORNERS.map((corner) =>
+        const low: [number, number, number] = [
+          (x0 + (part[0] as number)) - model.size.width / 2,
+          (y0 + (part[1] as number)) - model.size.height / 2,
+          (z0 + (part[2] as number)) - model.size.depth / 2,
+        ];
+        const high: [number, number, number] = [
+          (x1 - 1 + (part[3] as number)) - model.size.width / 2,
+          (y1 - 1 + (part[4] as number)) - model.size.height / 2,
+          (z1 - 1 + (part[5] as number)) - model.size.depth / 2,
+        ];
+        const whole: [number, number, number, number, number, number] = [
+          low[0], low[1], low[2], high[0], high[1], high[2],
+        ];
+        // One body, or a body with the sides that want another filament laid
+        // over it a wall thick. Either way the outside is the same box.
+        const bodies =
+          sides === null
+            ? [{ slot, box: whole }]
+            : skinned(whole, sides, wallInBlocks);
+
+        for (const body of bodies) {
+          const corners = CORNERS.map((corner) =>
+            place(
+              corner[0] === 0 ? body.box[0] : body.box[3],
+              corner[1] === 0 ? body.box[1] : body.box[4],
+              corner[2] === 0 ? body.box[2] : body.box[5],
+            ),
+          );
+          (volumes[body.slot] as Point[][]).push(corners);
+        }
+
+        // The sides of the whole box still hide what presses against them, but
+        // print nothing of their own: they are inside the solid already.
+        const outside = CORNERS.map((corner) =>
           place(
-            (corner[0] === 0 ? x0 + (part[0] as number) : x1 - 1 + (part[3] as number)) - model.size.width / 2,
-            (corner[1] === 0 ? y0 + (part[1] as number) : y1 - 1 + (part[4] as number)) - model.size.height / 2,
-            (corner[2] === 0 ? z0 + (part[2] as number) : z1 - 1 + (part[5] as number)) - model.size.depth / 2,
+            corner[0] === 0 ? whole[0] : whole[3],
+            corner[1] === 0 ? whole[1] : whole[4],
+            corner[2] === 0 ? whole[2] : whole[5],
           ),
         );
-        (volumes[slot] as Point[][]).push(corners);
-        // Its sides still hide what presses against them, but print nothing of
-        // their own: they are inside the solid already.
         for (const face of FACES) {
-          const side = face.map((corner) => corners[corner] as Point);
+          const side = face.map((corner) => outside[corner] as Point);
           const normal = normalOf(side);
           if (normal !== null) {
             shelled.push({
@@ -308,6 +376,13 @@ export function solidsBySlot(
     }
     const slot = slotOf(mesh.paletteIndex);
     const faces = mesh.quads.length / 12;
+    /** Which filament each face goes to, where faces are matched one by one. */
+    const faceSlots =
+      slotPlaces === null
+        ? null
+        : Array.from({ length: faces }, (_, face) =>
+            slotNearest(mesh.faceColours[face] ?? 0x9a9a9a, slotPlaces),
+          );
 
     // What the block is not, it may still be made of: the boxes of its own
     // model, printed solid, with only what is left over walled. Worked out once
@@ -335,6 +410,8 @@ export function solidsBySlot(
       const owner = `${ox},${oy},${oz}`;
 
       for (const part of solidParts) {
+        // A part of a model, printed solid: one filament, the block's own. A
+        // chest's lid is a lid, not six differently coloured faces.
         const corners = CORNERS.map((corner) =>
           place(
             ox + (corner[0] === 0 ? (part[0] as number) : (part[3] as number)),
@@ -375,6 +452,7 @@ export function solidsBySlot(
           // No area, so nothing to print and nothing to hide.
           continue;
         }
+        const mine = faceSlots?.[face] ?? slot;
 
         // Keyed by where the face is rather than how it is wound, so the two
         // sides of a shared wall meet on the same key.
@@ -390,7 +468,7 @@ export function solidsBySlot(
         // Either nothing was here, or what was here is the other side of one
         // sheet, or a surface this one is drawn over. In all three the later
         // face is the one to keep, and a sheet comes out as a single wall.
-        surface.set(key, { slot, corners, normal, owner });
+        surface.set(key, { slot: mine, corners, normal, owner });
       }
     }
   }
@@ -440,6 +518,173 @@ function addPlate(
       ),
     );
   }
+}
+
+/**
+ * The filament nearest a colour.
+ *
+ * <p>In Oklab, the same space the palette was worked out in, so a face going to
+ * the nearest filament agrees with the clustering that chose the filaments.
+ */
+function slotNearest(colour: number, slots: readonly Oklab[]): number {
+  const want = toOklab(colour);
+  let best = 0;
+  let closest = Infinity;
+  for (let slot = 0; slot < slots.length; slot++) {
+    const gap = oklabDistance(slots[slot] as Oklab, want);
+    if (gap < closest) {
+      closest = gap;
+      best = slot;
+    }
+  }
+  return best;
+}
+
+/** Which of the six sides of a cube a face points at, or null for anything else. */
+function sideOf(normal: Point): number | null {
+  for (let axis = 0; axis < 3; axis++) {
+    const along = normal[axis] as number;
+    if (Math.abs(Math.abs(along) - 1) < 1e-6) {
+      return axis * 2 + (along > 0 ? 1 : 0);
+    }
+  }
+  return null;
+}
+
+/**
+ * Which filament each side of a block wants, where they do not all agree.
+ *
+ * <p>Read off the model's own faces: every face that lies flat against a side
+ * of the cube votes with its area for the filament nearest its colour, and the
+ * side takes the winner. A face that is not flat against any side -- a stair's
+ * step, a torch's tilt -- has no vote, because it is not what anybody sees
+ * when they look at that side.
+ *
+ * @return six filaments, one per side in the order of {@link FACES}, or null
+ *         when every side wants the same one and there is nothing to do
+ */
+function sidesOfMesh(
+  mesh: VoxelModel["meshes"][number],
+  slots: readonly Oklab[],
+  fallback: number,
+): number[] | null {
+  const votes = Array.from({ length: 6 }, () => new Map<number, number>());
+  const faces = mesh.quads.length / 12;
+
+  for (let face = 0; face < faces; face++) {
+    const corners: Point[] = [];
+    for (let corner = 0; corner < 4; corner++) {
+      const at = face * 12 + corner * 3;
+      corners.push([
+        mesh.quads[at] as number,
+        mesh.quads[at + 1] as number,
+        mesh.quads[at + 2] as number,
+      ]);
+    }
+    const normal = normalOf(corners);
+    if (normal === null) {
+      continue;
+    }
+    const side = sideOf(normal);
+    if (side === null) {
+      continue;
+    }
+    // Only a face actually on the cube's surface speaks for that surface: the
+    // top of a stair's lower slab points up, but it is inside the block.
+    const axis = side >> 1;
+    const at = corners[0]?.[axis] ?? 0;
+    if (Math.abs(at - (side % 2 === 1 ? 1 : 0)) > 1e-6) {
+      continue;
+    }
+
+    const [u, v] = others(axis);
+    const us = corners.map((corner) => corner[u] as number);
+    const vs = corners.map((corner) => corner[v] as number);
+    const area =
+      (Math.max(...us) - Math.min(...us)) * (Math.max(...vs) - Math.min(...vs));
+    if (area <= 0) {
+      continue;
+    }
+    const slot = slotNearest(mesh.faceColours[face] ?? 0x9a9a9a, slots);
+    const tally = votes[side] as Map<number, number>;
+    tally.set(slot, (tally.get(slot) ?? 0) + area);
+  }
+
+  const sides = votes.map((tally) => {
+    let best = fallback;
+    let most = 0;
+    for (const [slot, area] of tally) {
+      if (area > most) {
+        most = area;
+        best = slot;
+      }
+    }
+    return best;
+  });
+  return sides.every((slot) => slot === sides[0]) ? null : sides;
+}
+
+/**
+ * A box in the commonest of its sides' filaments, with the others laid over it.
+ *
+ * <p>The body is pulled in by a wall wherever a side wants a different filament,
+ * and that side gets a slab of exactly that thickness laid on it. So the outside
+ * is where it always was, to the last decimal, and the colour of it is the
+ * colour the model had there.
+ *
+ * <p>Not overlapped, pulled in: two bodies of different filaments sharing the
+ * same space is a question with no answer, and a slicer will pick one of them
+ * without saying which.
+ */
+function skinned(
+  box: readonly [number, number, number, number, number, number],
+  sides: readonly number[],
+  wall: number,
+): Array<{ slot: number; box: [number, number, number, number, number, number] }> {
+  // The commonest side wins the body, so the fewest slabs are needed.
+  const tally = new Map<number, number>();
+  for (const slot of sides) {
+    tally.set(slot, (tally.get(slot) ?? 0) + 1);
+  }
+  let body = sides[0] as number;
+  let most = 0;
+  for (const [slot, count] of tally) {
+    if (count > most) {
+      most = count;
+      body = slot;
+    }
+  }
+
+  const inner = [...box] as [number, number, number, number, number, number];
+  const parts: Array<{ slot: number; box: [number, number, number, number, number, number] }> = [];
+
+  for (let side = 0; side < 6; side++) {
+    if (sides[side] === body) {
+      continue;
+    }
+    const axis = side >> 1;
+    const far = side % 2 === 1;
+    const thick = Math.min(wall, ((box[axis + 3] as number) - (box[axis] as number)) / 2);
+    const skin = [...box] as [number, number, number, number, number, number];
+    if (far) {
+      skin[axis] = (box[axis + 3] as number) - thick;
+      inner[axis + 3] = Math.min(inner[axis + 3] as number, skin[axis] as number);
+    } else {
+      skin[axis + 3] = (box[axis] as number) + thick;
+      inner[axis] = Math.max(inner[axis] as number, skin[axis + 3] as number);
+    }
+    parts.push({ slot: sides[side] as number, box: skin });
+  }
+
+  // A body pulled in to nothing is a box made entirely of its own skin.
+  if (
+    (inner[3] as number) - (inner[0] as number) > SLIVER &&
+    (inner[4] as number) - (inner[1] as number) > SLIVER &&
+    (inner[5] as number) - (inner[2] as number) > SLIVER
+  ) {
+    parts.push({ slot: body, box: inner });
+  }
+  return parts;
 }
 
 /** A face on its way to becoming a wall. */
