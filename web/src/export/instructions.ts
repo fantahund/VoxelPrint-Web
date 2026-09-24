@@ -1,7 +1,6 @@
 import { zlibSync } from "fflate";
 import type { FilamentSlot } from "../slots/filament";
 import type { Piece, Split } from "./split";
-import type { Solid } from "./geometry";
 
 /**
  * The booklet that comes with a build cut into pieces.
@@ -12,11 +11,16 @@ import type { Solid } from "./geometry";
  * far in grey, and the piece going on next drawn in its own colour where it
  * goes.
  *
- * <p>So the pieces are drawn. Each is turned into cells the size of a block,
- * the cells are projected the way every building instruction in the world
- * projects them -- from a corner, above -- and drawn back to front with the
- * faces nobody can see left out. It is a small renderer, and a box is the only
- * thing it can draw, which happens to be what a Minecraft build is made of.
+ * <p>So the pieces are drawn -- the bodies themselves, in the filament each of
+ * them prints in, not a grid over them. A stair is drawn as the two boxes it is
+ * printed as and a torch as the sticks it is made of, because everything to say
+ * that with is already here and a picture that agrees with the file is worth
+ * the second it takes to draw.
+ *
+ * <p>Projected the way every building instruction in the world projects them --
+ * from a corner, above -- with only the faces turned towards the reader, and
+ * painted back to front. A face nearer the reader has a larger x plus y plus z,
+ * and that one number sorts the whole page.
  *
  * <p>Written out as PDF by hand. A PDF is a page tree, a cross reference table
  * and some drawing commands; the fonts it asks for are the fourteen every
@@ -36,16 +40,6 @@ const BOLD = "Helvetica-Bold";
 /** How far apart the two halves of the isometric view are, and how tall. */
 const COS30 = Math.cos(Math.PI / 6);
 const SIN30 = Math.sin(Math.PI / 6);
-
-/**
- * The most cells to draw in one picture.
- *
- * <p>A build of a few thousand is a page of boxes a millimetre across, which is
- * a grey rectangle and not a drawing. Past this the cells are made coarser
- * until it fits, which loses detail and keeps the shape -- and the shape is all
- * a step needs to show.
- */
-const MOST_CELLS = 40_000;
 
 function literal(text: string): string {
   return text.replace(/[\\()]/g, (character) => `\\${character}`);
@@ -122,29 +116,21 @@ function darken(colour: number, by: number): number {
   return (red << 16) | (green << 8) | blue;
 }
 
-/** Where a piece's solids reach, and where they are, as cells of a grid. */
-interface Cells {
-  /** Cell keys, as x + y * nx + z * nx * ny. */
-  readonly filled: ReadonlySet<number>;
+/** One face of one body, ready to be painted. */
+interface Facet {
+  readonly points: ReadonlyArray<readonly [number, number]>;
   readonly colour: number;
+  /** How near the reader it is, for painting back to front. */
+  readonly depth: number;
 }
 
+/** The corner of the whole build, so every step is drawn at the same size. */
 interface Frame {
   readonly low: readonly [number, number, number];
-  readonly step: number;
-  readonly nx: number;
-  readonly ny: number;
-  readonly nz: number;
+  readonly high: readonly [number, number, number];
 }
 
-/**
- * A grid over the whole build, coarse enough to draw.
- *
- * <p>A cell is a block to begin with, which is the size the build was made in
- * and the size that reads. It is doubled until the whole thing fits in what a
- * page can hold, because a picture of forty thousand boxes is a grey rectangle.
- */
-function frameOf(pieces: readonly Piece[], millimetresPerBlock: number): Frame {
+export function frameOf(pieces: readonly Piece[]): Frame {
   const low = [Infinity, Infinity, Infinity];
   const high = [-Infinity, -Infinity, -Infinity];
   for (const piece of pieces) {
@@ -159,73 +145,38 @@ function frameOf(pieces: readonly Piece[], millimetresPerBlock: number): Frame {
       }
     }
   }
-  if (!Number.isFinite(low[0] as number)) {
-    return { low: [0, 0, 0], step: 1, nx: 0, ny: 0, nz: 0 };
-  }
-
-  let step = Math.max(millimetresPerBlock, 0.5);
-  let counts = [0, 0, 0];
-  for (let tries = 0; tries < 8; tries++) {
-    counts = [0, 1, 2].map((axis) =>
-      Math.max(1, Math.ceil(((high[axis] as number) - (low[axis] as number)) / step)),
-    );
-    if ((counts[0] as number) * (counts[1] as number) * (counts[2] as number) <= MOST_CELLS) {
-      break;
-    }
-    step *= 2;
-  }
-  return {
-    low: low as [number, number, number],
-    step,
-    nx: counts[0] as number,
-    ny: counts[1] as number,
-    nz: counts[2] as number,
-  };
+  return Number.isFinite(low[0] as number)
+    ? { low: low as [number, number, number], high: high as [number, number, number] }
+    : { low: [0, 0, 0], high: [0, 0, 0] };
 }
 
-/** Which cells of the grid a piece's solids reach into. */
-function cellsOf(piece: Piece, frame: Frame, colour: number): Cells {
-  const filled = new Set<number>();
-  const at = (x: number, y: number, z: number): number => x + y * frame.nx + z * frame.nx * frame.ny;
-
-  for (const group of piece.solids) {
-    for (const solid of group) {
-      const low = [Infinity, Infinity, Infinity];
-      const high = [-Infinity, -Infinity, -Infinity];
-      for (const corner of solid) {
-        for (let axis = 0; axis < 3; axis++) {
-          low[axis] = Math.min(low[axis] as number, corner[axis] as number);
-          high[axis] = Math.max(high[axis] as number, corner[axis] as number);
-        }
-      }
-      const from = [0, 1, 2].map((axis) =>
-        Math.max(0, Math.floor(((low[axis] as number) - (frame.low[axis] as number)) / frame.step)),
-      );
-      const to = [0, 1, 2].map((axis) =>
-        Math.min(
-          [frame.nx, frame.ny, frame.nz][axis] as number,
-          Math.ceil(((high[axis] as number) - (frame.low[axis] as number)) / frame.step),
-        ) - 1,
-      );
-      for (let x = from[0] as number; x <= (to[0] as number); x++) {
-        for (let y = from[1] as number; y <= (to[1] as number); y++) {
-          for (let z = from[2] as number; z <= (to[2] as number); z++) {
-            filled.add(at(x, y, z));
-          }
-        }
-      }
-    }
-  }
-  return { filled, colour };
-}
+/**
+ * The six faces of a body, as the corners are ordered everywhere else.
+ *
+ * <p>Repeated here rather than imported so this file needs nothing of the
+ * exporter but the shapes themselves.
+ */
+const SIDES: ReadonlyArray<readonly [number, number, number, number]> = [
+  [0, 3, 2, 1],
+  [4, 5, 6, 7],
+  [0, 1, 5, 4],
+  [3, 7, 6, 2],
+  [0, 4, 7, 3],
+  [1, 2, 6, 5],
+];
 
 /**
  * Draws the build so far, with one piece picked out.
  *
+ * <p>The bodies themselves, not a grid over them: a stair is drawn as the two
+ * boxes it is printed as, and the colour of each is the filament it prints in.
+ * Everything to say it with is already here, and a picture that agrees with the
+ * file is worth the second it takes to draw.
+ *
  * <p>From a corner and above, which is how every building instruction there has
- * ever been is drawn, and back to front so nothing needs sorting afterwards: a
- * cell nearer the reader is one with a larger x plus y plus z. A face with a
- * drawn cell against it is left out, which is most of them.
+ * ever been is drawn. Only the faces turned towards the reader, and painted
+ * back to front -- a face nearer the reader has a larger x plus y plus z, and
+ * that one number sorts the whole page.
  *
  * @param placed everything already on the table, in the order it went on
  * @param next   the piece going on now, drawn in its own colour
@@ -234,75 +185,85 @@ function cellsOf(piece: Piece, frame: Frame, colour: number): Cells {
 function draw(
   page: Page,
   frame: Frame,
-  placed: readonly Cells[],
-  next: Cells | null,
+  colours: readonly number[],
+  placed: readonly Piece[],
+  next: Piece | null,
   top: number,
   room: number,
   full = false,
 ): void {
-  if (frame.nx === 0) {
+  const span = [0, 1, 2].map((axis) => (frame.high[axis] as number) - (frame.low[axis] as number));
+  if ((span[0] as number) <= 0 && (span[2] as number) <= 0) {
     return;
   }
 
-  /** Which piece owns each cell: the last one to claim it. */
-  const owner = new Map<number, number>();
-  [...placed, ...(next === null ? [] : [next])].forEach((cells, index) => {
-    for (const cell of cells.filled) {
-      owner.set(cell, index);
-    }
-  });
-  const colours = [...placed.map((cells) => cells.colour), ...(next === null ? [] : [next.colour])];
-  const newest = colours.length - 1;
+  // The picture's own size in the isometric view, before it is fitted.
+  const wide = ((span[0] as number) + (span[1] as number)) * COS30;
+  const tall = ((span[0] as number) + (span[1] as number)) * SIN30 + (span[2] as number);
+  const scale = Math.min((WIDTH - MARGIN * 2) / Math.max(wide, 1e-6), room / Math.max(tall, 1e-6));
+  const originX =
+    MARGIN + (WIDTH - MARGIN * 2 - wide * scale) / 2 + (span[1] as number) * COS30 * scale;
+  const originY = top + (room - tall * scale) / 2 + (span[2] as number) * scale;
 
-  // The picture's own size, before it is fitted to the page.
-  const wide = (frame.nx + frame.ny) * COS30;
-  const tall = (frame.nx + frame.ny) * SIN30 + frame.nz;
-  const scale = Math.min((WIDTH - MARGIN * 2) / wide, room / tall);
-  const originX = MARGIN + ((WIDTH - MARGIN * 2) - wide * scale) / 2 + frame.ny * COS30 * scale;
-  const originY = top + (room - tall * scale) / 2 + frame.nz * scale;
+  const put = (point: readonly number[]): [number, number] => {
+    const x = (point[0] as number) - (frame.low[0] as number);
+    const y = (point[1] as number) - (frame.low[1] as number);
+    const z = (point[2] as number) - (frame.low[2] as number);
+    return [originX + (x - y) * COS30 * scale, originY + (x + y) * SIN30 * scale - z * scale];
+  };
 
-  const put = (x: number, y: number, z: number): [number, number] => [
-    originX + (x - y) * COS30 * scale,
-    originY + (x + y) * SIN30 * scale - z * scale,
-  ];
-
-  const at = (x: number, y: number, z: number): number => x + y * frame.nx + z * frame.nx * frame.ny;
-  const has = (x: number, y: number, z: number): boolean =>
-    x >= 0 && y >= 0 && z >= 0 && x < frame.nx && y < frame.ny && z < frame.nz && owner.has(at(x, y, z));
-
-  // Back to front. The three sides facing the reader are the only ones drawn.
-  for (let sum = 0; sum <= frame.nx + frame.ny + frame.nz; sum++) {
-    for (let x = 0; x < frame.nx; x++) {
-      for (let y = 0; y < frame.ny; y++) {
-        const z = sum - x - y;
-        if (z < 0 || z >= frame.nz || !has(x, y, z)) {
-          continue;
-        }
-        const mine = owner.get(at(x, y, z)) ?? 0;
-        const colour = colours[mine] ?? 0x9a9a9a;
-        const fresh = full || (mine === newest && next !== null);
-        const paint = fresh ? colour : pale(colour);
-
-        if (!has(x, y, z + 1)) {
-          page.face(
-            [put(x, y, z + 1), put(x + 1, y, z + 1), put(x + 1, y + 1, z + 1), put(x, y + 1, z + 1)],
-            paint,
-          );
-        }
-        if (!has(x + 1, y, z)) {
-          page.face(
-            [put(x + 1, y, z), put(x + 1, y + 1, z), put(x + 1, y + 1, z + 1), put(x + 1, y, z + 1)],
-            darken(paint, 0.82),
-          );
-        }
-        if (!has(x, y + 1, z)) {
-          page.face(
-            [put(x, y + 1, z), put(x + 1, y + 1, z), put(x + 1, y + 1, z + 1), put(x, y + 1, z + 1)],
-            darken(paint, 0.66),
-          );
+  const facets: Facet[] = [];
+  const collect = (piece: Piece, fresh: boolean): void => {
+    piece.solids.forEach((group, slot) => {
+      const own = colours[slot] ?? 0x9a9a9a;
+      for (const solid of group) {
+        for (const side of SIDES) {
+          const corners = side.map((index) => solid[index] as readonly number[]);
+          const [a, b, c] = corners as [readonly number[], readonly number[], readonly number[]];
+          const ux = (b[0] as number) - (a[0] as number);
+          const uy = (b[1] as number) - (a[1] as number);
+          const uz = (b[2] as number) - (a[2] as number);
+          const vx = (c[0] as number) - (a[0] as number);
+          const vy = (c[1] as number) - (a[1] as number);
+          const vz = (c[2] as number) - (a[2] as number);
+          const nx = uy * vz - uz * vy;
+          const ny = uz * vx - ux * vz;
+          const nz = ux * vy - uy * vx;
+          // The reader is out along (1, 1, 1); a face turned away is a face
+          // something else is in front of.
+          const towards = nx + ny + nz;
+          if (towards <= 0) {
+            continue;
+          }
+          const length = Math.hypot(nx, ny, nz) || 1;
+          // Top bright, the two sides each a shade darker: the whole of the
+          // lighting, and enough of it to read a shape by.
+          const lit = 0.66 + 0.34 * Math.max(0, nz / length);
+          const paint = darken(fresh ? own : pale(own), lit);
+          facets.push({
+            points: corners.map(put),
+            colour: paint,
+            depth: corners.reduce(
+              (sum, corner) =>
+                sum + (corner[0] as number) + (corner[1] as number) + (corner[2] as number),
+              0,
+            ),
+          });
         }
       }
-    }
+    });
+  };
+
+  for (const piece of placed) {
+    collect(piece, full);
+  }
+  if (next !== null) {
+    collect(next, true);
+  }
+
+  facets.sort((one, other) => one.depth - other.depth);
+  for (const facet of facets) {
+    page.face(facet.points, facet.colour);
   }
 }
 
@@ -338,12 +299,11 @@ export function instructions(
   millimetresPerBlock: number,
 ): Uint8Array {
   const pages: Page[] = [];
-  const frame = frameOf(pieces, millimetresPerBlock);
-  const colourOf = (piece: Piece, index: number): number =>
-    split === "colour"
-      ? slots[slotOf(piece)]?.colour ?? 0x9a9a9a
-      : [0x5b8ff9, 0x61ddaa, 0xf6bd16, 0xf08bb4, 0x7262fd, 0x78d3f8][index % 6] ?? 0x9a9a9a;
-  const cells = pieces.map((piece, index) => cellsOf(piece, frame, colourOf(piece, index)));
+  const frame = frameOf(pieces);
+  // Every body in the filament it prints in, which is what the picture is for.
+  const colours = slots.map((slot) => slot.colour);
+  /** The one colour a piece is, for the swatch beside its name. */
+  const colourOf = (piece: Piece): number => colours[slotOf(piece)] ?? 0x9a9a9a;
 
   // --- what is in the box ----------------------------------------------------
   {
@@ -381,8 +341,12 @@ export function instructions(
       if (y > HEIGHT - MARGIN - 20) {
         return;
       }
-      page.box((columns[0] as number) - 1, y - 7, 9, 9, colourOf(piece, index));
-      page.outline((columns[0] as number) - 1, y - 7, 9, 9);
+      // A colour beside a step only means anything when the step is a colour:
+      // a tile holds every filament, and a chip of the first one is a lie.
+      if (split === "colour") {
+        page.box((columns[0] as number) - 1, y - 7, 9, 9, colourOf(piece));
+        page.outline((columns[0] as number) - 1, y - 7, 9, 9);
+      }
       page.text((columns[0] as number) + 14, y, 9, PLAIN, String(index + 1));
       page.text(columns[1] as number, y, 9, PLAIN, piece.name);
       page.text(columns[2] as number, y, 9, PLAIN, fileName(piece, index), 0.35);
@@ -406,7 +370,7 @@ export function instructions(
       page.text(MARGIN, y, 11, BOLD, "Finished");
       // Every piece in its own colour, so this doubles as the key to the
       // swatches in the table above it.
-      draw(page, frame, cells, null, y + 10, HEIGHT - MARGIN - y - 20, true);
+      draw(page, frame, colours, pieces, null, y + 10, HEIGHT - MARGIN - y - 20, true);
     }
     pages.push(page);
   }
@@ -418,9 +382,11 @@ export function instructions(
     page.text(MARGIN, y, 18, BOLD, `Step ${index + 1} of ${pieces.length}`);
     y += 20;
 
-    page.box(MARGIN, y - 8, 11, 11, colourOf(piece, index));
-    page.outline(MARGIN, y - 8, 11, 11);
-    page.text(MARGIN + 18, y, 11, BOLD, piece.name);
+    if (split === "colour") {
+      page.box(MARGIN, y - 8, 11, 11, colourOf(piece));
+      page.outline(MARGIN, y - 8, 11, 11);
+    }
+    page.text(split === "colour" ? MARGIN + 18 : MARGIN, y, 11, BOLD, piece.name);
     y += 14;
     page.text(
       MARGIN,
@@ -448,7 +414,15 @@ export function instructions(
     y += 14;
     page.rule(y);
 
-    draw(page, frame, cells.slice(0, index), cells[index] ?? null, y + 16, HEIGHT - MARGIN - y - 30);
+    draw(
+      page,
+      frame,
+      colours,
+      pieces.slice(0, index),
+      piece,
+      y + 16,
+      HEIGHT - MARGIN - y - 30,
+    );
     pages.push(page);
   });
 
@@ -529,6 +503,3 @@ function assemble(contents: readonly string[]): Uint8Array {
   }
   return pdf;
 }
-
-/** Kept for the checks, which ask what a piece's solids add up to. */
-export type { Solid };

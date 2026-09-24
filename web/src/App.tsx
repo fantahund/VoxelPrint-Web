@@ -513,8 +513,13 @@ function Mapping({
       <Table.Root size="1" variant="surface" className="sticky-head">
         <Table.Header>
           <Table.Row>
-            <Table.ColumnHeaderCell>Type</Table.ColumnHeaderCell>
-            <Table.ColumnHeaderCell align="right">Blocks</Table.ColumnHeaderCell>
+            {/* Widths given rather than left to the content: a spool called
+                "Bambu Green PLA Basic" would otherwise take the row and leave
+                the block's name a column one letter wide. */}
+            <Table.ColumnHeaderCell width="45%">Type</Table.ColumnHeaderCell>
+            <Table.ColumnHeaderCell align="right" width="4rem">
+              Blocks
+            </Table.ColumnHeaderCell>
             <Table.ColumnHeaderCell>Filament</Table.ColumnHeaderCell>
           </Table.Row>
         </Table.Header>
@@ -525,14 +530,17 @@ function Mapping({
             const inGame = model.blockTypeColours[id] ?? 0x9a9a9a;
             return (
               <Table.Row key={id}>
-                <Table.Cell>
-                  <Flex gap="2" align="center">
+                <Table.Cell style={{ maxWidth: 0 }}>
+                  <Flex gap="2" align="center" style={{ minWidth: 0 }}>
                     <span
                       className="swatch"
                       style={{ background: toHex(inGame) }}
                       title={`In game: ${toHex(inGame)}`}
                     />
-                    <Text size="1" style={{ overflowWrap: "anywhere" }}>
+                    {/* Cut with an ellipsis rather than broken anywhere: broken
+                        anywhere, a squeezed column spells a block's name down
+                        the page a letter at a time. */}
+                    <Text size="1" truncate title={id.replace(/^minecraft:/, "")}>
                       {id.replace(/^minecraft:/, "")}
                     </Text>
                   </Flex>
@@ -542,8 +550,8 @@ function Mapping({
                     {numberFormat.format(count)}
                   </Text>
                 </Table.Cell>
-                <Table.Cell>
-                  <Flex gap="2" align="center">
+                <Table.Cell style={{ maxWidth: 0 }}>
+                  <Flex gap="2" align="center" style={{ minWidth: 0 }}>
                     <span
                       className="swatch"
                       style={{ background: toHex(slot?.colour ?? 0x9a9a9a) }}
@@ -554,7 +562,11 @@ function Mapping({
                       value={String(slotIndex)}
                       onValueChange={(value) => onAssign(id, Number(value))}
                     >
-                      <Select.Trigger variant="ghost" aria-label={`Filament for ${id}`} />
+                      <Select.Trigger
+                        variant="ghost"
+                        aria-label={`Filament for ${id}`}
+                        style={{ minWidth: 0, overflow: "hidden" }}
+                      />
                       <Select.Content>
                         {slots.map((option, index) => (
                           <Select.Item key={index} value={String(index)}>

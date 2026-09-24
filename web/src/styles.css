@@ -263,3 +263,11 @@ body {
   color: inherit;
   text-align: start;
 }
+
+/* A filament's name can be as long as a maker cares to make it, and the row it
+   sits in cannot. */
+.side .rt-SelectTrigger .rt-SelectTriggerInner {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
