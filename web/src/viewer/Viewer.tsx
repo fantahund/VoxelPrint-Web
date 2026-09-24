@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { srgbToLinear } from "../colour";
@@ -33,6 +33,8 @@ interface Stage {
 /** Everything belonging to one model, thrown away when it is replaced. */
 interface Build {
   readonly boxes: THREE.InstancedMesh | null;
+  /** The slab and its letters, where there is one. */
+  readonly plate: THREE.InstancedMesh | null;
   /** One instanced mesh per block state that has a real model. */
   readonly meshes: readonly THREE.InstancedMesh[];
   /** Shared by every mesh, so switching colour mode is one flag rather than many. */
@@ -75,19 +77,26 @@ export default function Viewer({
   model,
   colours,
   plate,
+  plateColours,
   onPick,
   frame,
 }: {
   model: VoxelModel;
   colours: SceneColours;
   /**
-   * The slab under the build and its letters, each with the colour it prints in.
+   * The slab under the build and its letters, as boxes.
    *
    * <p>Drawn here rather than left to the writers so that what is on screen is
    * what comes out of the printer. It is not part of the model: nothing can be
    * picked off it, and it is no block of anybody's build.
+   *
+   * <p>Its shape and its colours arrive apart, as the build's do, because they
+   * change for different reasons: nudging a filament's colour must not rebuild
+   * a mesh.
    */
-  plate?: ReadonlyArray<{ box: PlateBox; colour: number }>;
+  plate?: readonly PlateBox[];
+  /** What each of those boxes prints in, as 0xRRGGBB. */
+  plateColours?: readonly number[];
   /** Called when a block is right clicked, or null to leave picking off. */
   onPick?: ((pick: Pick) => void) | null;
   /** Changes when the view should be framed afresh, such as for a new project. */
@@ -102,6 +111,14 @@ export default function Viewer({
   modelRef.current = model;
   const pickRef = useRef(onPick);
   pickRef.current = onPick;
+  /**
+   * Bumped every time the geometry is built afresh.
+   *
+   * <p>What the colours depend on, rather than the list of things that happen
+   * to cause a rebuild. A fresh instanced mesh starts every colour at black, so
+   * a rebuild the colours do not hear about is a build nobody can see.
+   */
+  const [generation, setGeneration] = useState(0);
 
   // --- the stage, built once -------------------------------------------------
   useEffect(() => {
@@ -371,35 +388,29 @@ export default function Viewer({
       meshes.push(mesh);
     }
 
-    // The plate, as plain boxes of its own colour. Kept out of the instanced
-    // build above because it is not made of blocks and must not be picked.
+    // The plate, as plain boxes. Kept out of the instanced build above because
+    // it is not made of blocks and must not be picked.
+    let plateMesh: THREE.InstancedMesh | null = null;
     if (plate !== undefined && plate.length > 0) {
       const geometry = new THREE.BoxGeometry(1, 1, 1);
       const material = new THREE.MeshLambertMaterial();
       disposables.push(geometry, material);
       const slab = new THREE.InstancedMesh(geometry, material, plate.length);
-      const tints = new THREE.InstancedBufferAttribute(new Float32Array(plate.length * 3), 3);
-      slab.instanceColor = tints;
+      slab.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(plate.length * 3), 3);
       const middle = new THREE.Vector3();
       const size = new THREE.Vector3();
       const still = new THREE.Quaternion();
-      plate.forEach((part, i) => {
-        const [x0, y0, z0, x1, y1, z1] = part.box;
+      plate.forEach((box, i) => {
+        const [x0, y0, z0, x1, y1, z1] = box;
         middle.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
         size.set(x1 - x0, y1 - y0, z1 - z0);
         matrix.compose(middle, still, size);
         slab.setMatrixAt(i, matrix);
-        tints.setXYZ(
-          i,
-          srgbToLinear(((part.colour >> 16) & 0xff) / 255),
-          srgbToLinear(((part.colour >> 8) & 0xff) / 255),
-          srgbToLinear((part.colour & 0xff) / 255),
-        );
       });
       slab.instanceMatrix.needsUpdate = true;
-      tints.needsUpdate = true;
       slab.raycast = () => undefined;
       stage.build.add(slab);
+      plateMesh = slab;
     }
 
     // One instance per box, scaled from the unit cube. A stair is two of them,
@@ -434,25 +445,30 @@ export default function Viewer({
     }
 
     const theseBoxes = boxes;
+    const thisPlate = plateMesh;
     buildRef.current = {
       boxes,
+      plate: plateMesh,
       meshes,
       meshMaterial,
       bounds: boundsPerBlock(model),
       dispose: () => {
-        for (const mesh of meshes) {
+        for (const mesh of [...meshes, ...(theseBoxes === null ? [] : [theseBoxes]),
+          ...(thisPlate === null ? [] : [thisPlate])]) {
           stage.build.remove(mesh);
           mesh.dispose();
-        }
-        if (theseBoxes !== null) {
-          stage.build.remove(theseBoxes);
-          theseBoxes.dispose();
         }
         for (const resource of disposables) {
           resource.dispose();
         }
       },
     };
+    // Every instance colour of a fresh build starts at black, and the colours
+    // are an effect of their own. Saying so here rather than listing whatever
+    // this effect happens to depend on is what keeps the two from drifting
+    // apart -- they did once, and the whole build went black the moment a
+    // plate was worked out for it.
+    setGeneration((count) => count + 1);
 
     return () => {
       buildRef.current?.dispose();
@@ -517,8 +533,22 @@ export default function Viewer({
       boxes.array.set(colours.boxes.subarray(0, boxes.array.length));
       boxes.needsUpdate = true;
     }
-    // Also after a rebuild, which starts every instance colour at black.
-  }, [colours, model]);
+
+    const slab = current.plate?.instanceColor;
+    if (slab != null && plateColours !== undefined) {
+      for (let i = 0; i < plateColours.length && i * 3 + 2 < slab.array.length; i++) {
+        const colour = plateColours[i] as number;
+        slab.setXYZ(
+          i,
+          srgbToLinear(((colour >> 16) & 0xff) / 255),
+          srgbToLinear(((colour >> 8) & 0xff) / 255),
+          srgbToLinear((colour & 0xff) / 255),
+        );
+      }
+      slab.needsUpdate = true;
+    }
+    // After a rebuild as well, which is what the generation is for.
+  }, [colours, plateColours, generation]);
 
   return <div className="viewer" ref={hostRef} />;
 }

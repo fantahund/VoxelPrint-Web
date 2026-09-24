@@ -1295,6 +1295,7 @@ export default function App(): React.ReactElement {
   /** Puts the project in the address bar, so a reload keeps what is on screen. */
   const remember = useCallback((next: Project) => {
     setSkin(null);
+    setPlate(null);
     setProject(next);
     const url = new URL(window.location.href);
     url.searchParams.set("project", next.id);
@@ -1331,6 +1332,9 @@ export default function App(): React.ReactElement {
   const takeSkin = useCallback((name: string, loaded: Skin, model?: PlayerModel) => {
     setProject(null);
     setError(null);
+    // The print panel is about to be built afresh for this skin and will say
+    // what it wants; until it does, the old one's stand is not this one's.
+    setPlate(null);
     setPlayerModel(model ?? (slimBySkin(loaded) ? "slim" : "classic"));
     setSkin({ name, skin: loaded });
     const url = new URL(window.location.href);
@@ -1731,18 +1735,32 @@ export default function App(): React.ReactElement {
     return colourise(model, perPaletteIndex, false);
   }, [model, slots, assignment, colourMode]);
 
-  /** The plate in the colours of the filaments it is set to print in. */
-  const plateParts = useMemo(() => {
-    if (model === null || plate === null) {
-      return undefined;
-    }
-    const colourOf = (slot: number): number =>
-      slots[Math.min(Math.max(slot, 0), slots.length - 1)]?.colour ?? 0x9a9a9a;
-    return plateOf(model, plate.scale, plate.options).map((part) => ({
-      box: part.box,
-      colour: colourMode === "filament" ? colourOf(part.slot) : 0xb0b0b0,
-    }));
-  }, [model, plate, slots, colourMode]);
+  /**
+   * The plate, worked out once, with its shape and its colours kept apart.
+   *
+   * <p>Apart because they change for different reasons: dragging a filament's
+   * colour picker must not rebuild the geometry underneath it.
+   */
+  const plateParts = useMemo(
+    () => (model === null || plate === null ? undefined : plateOf(model, plate.scale, plate.options)),
+    [model, plate],
+  );
+  // Nothing rather than an empty list, so that turning the stand off and
+  // opening a project with none are the same to the preview and neither
+  // rebuilds a mesh to draw no plate.
+  const plateBoxes = useMemo(
+    () => (plateParts === undefined || plateParts.length === 0 ? undefined : plateParts.map((part) => part.box)),
+    [plateParts],
+  );
+  const plateColours = useMemo(
+    () =>
+      plateParts?.map((part) =>
+        colourMode === "filament"
+          ? slots[Math.min(Math.max(part.slot, 0), slots.length - 1)]?.colour ?? 0x9a9a9a
+          : 0xb0b0b0,
+      ),
+    [plateParts, slots, colourMode],
+  );
 
   return (
     <Theme
@@ -1995,7 +2013,8 @@ export default function App(): React.ReactElement {
                   <Viewer
                     model={model}
                     colours={colours}
-                    plate={plateParts}
+                    plate={plateBoxes}
+                    plateColours={plateColours}
                     onPick={setMenu}
                     frame={project?.id ?? "skin"}
                   />
@@ -2075,9 +2094,12 @@ export default function App(): React.ReactElement {
                     </>
                   )}
                   <Download
-                    // Remounted between a build and a skin, so the size it
-                    // starts at is the one that suits what is open.
-                    key={skin === null ? "build" : "skin"}
+                    // Remounted for whatever is opened next, not merely when a
+                    // build gives way to a skin. The panel holds the size to
+                    // print at and the name on the plate, and both belong to
+                    // the thing that is open: Paul's stand saying PAUL is
+                    // right until Klaus arrives.
+                    key={project?.id ?? `skin:${skin?.name ?? ""}`}
                     model={model}
                     slots={slots}
                     assignment={assignment}
