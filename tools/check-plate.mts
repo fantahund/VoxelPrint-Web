@@ -9,7 +9,14 @@
  * of boxes are letters until somebody reads them: mirrored, upside down, or
  * running off the back of the plate, they still measure right.
  */
-import { plateOf, readable, type PlateOptions } from "../web/src/export/plate.js";
+import {
+  GLYPH_HEIGHT,
+  GLYPH_WIDTH,
+  glyph,
+  plateOf,
+  readable,
+  type PlateOptions,
+} from "../web/src/export/plate.js";
 import { solidsBySlot, type GeometryOptions } from "../web/src/export/geometry.js";
 import type { VoxelModel } from "../web/src/viewer/buildVoxels.js";
 
@@ -127,19 +134,43 @@ const plate = (over: Partial<PlateOptions> = {}): PlateOptions => ({
     fail(`"Dorf äöü" reads as "${readable("Dorf äöü")}"`);
   }
 
-  // The bars of an E, read back off the boxes: three full rows and a stem.
-  const letters = plateOf(model, 10, plate({ label: "E", labelMillimetres: 7 })).slice(1);
-  const pixel = 7 / 7 / 10;
-  const rows = new Map<number, number>();
-  for (const part of letters) {
-    const row = Math.round((part.box[5] as number) / pixel);
-    rows.set(row, (rows.get(row) ?? 0) + Math.round(((part.box[3] as number) - (part.box[0] as number)) / pixel));
-  }
-  const widths = [...rows.entries()].sort((a, b) => b[0] - a[0]).map(([, w]) => w);
-  if (widths.join(",") === "5,1,1,4,1,1,5") {
-    ok("an E reads top to bottom as 5,1,1,4,1,1,5 pixels wide, the right way up");
-  } else {
-    fail(`an E reads as ${widths.join(",")}, wanted 5,1,1,4,1,1,5`);
+  // The letter itself, rebuilt off the boxes and held against its own
+  // definition. Not how wide each row came out: an E is the same widths upside
+  // down, and widths cannot see a left to right mirror at all, which is how a
+  // mirrored plate got past this the first time.
+  //
+  // Read the way somebody standing at the shelf reads it. The writing lies flat
+  // and faces up, so their left to right is the build's x rising, and the top
+  // of a letter is the edge furthest from them, which is z falling.
+  for (const letter of ["L", "F", "R", "2"]) {
+    const boxes = plateOf(model, 10, plate({ label: letter, labelMillimetres: 7 })).slice(1);
+    const pixel = 7 / 7 / 10;
+    const grid = Array.from({ length: GLYPH_HEIGHT }, () => Array(GLYPH_WIDTH).fill("0"));
+    const left = Math.min(...boxes.map((part) => part.box[0]));
+    const far = Math.min(...boxes.map((part) => part.box[2]));
+    let stray = 0;
+    for (const part of boxes) {
+      const from = Math.round((part.box[0] - left) / pixel);
+      const to = Math.round((part.box[3] - left) / pixel);
+      const row = Math.round((part.box[2] - far) / pixel);
+      for (let column = from; column < to; column++) {
+        if (row < 0 || row >= GLYPH_HEIGHT || column < 0 || column >= GLYPH_WIDTH) {
+          stray++;
+          continue;
+        }
+        (grid[row] as string[])[column] = "1";
+      }
+    }
+    const drawn = grid.map((row) => row.join(""));
+    const wanted = glyph(letter) as readonly string[];
+    if (stray === 0 && drawn.join("/") === wanted.join("/")) {
+      ok(`a ${letter} on the plate is the ${letter} it is defined as, read from the front`);
+    } else {
+      fail(
+        `a ${letter} came out as ${drawn.join("/")}, wanted ${wanted.join("/")}` +
+          (stray > 0 ? ` (${stray} pixels outside the letter)` : ""),
+      );
+    }
   }
 }
 

@@ -106,8 +106,19 @@ const GLYPHS: Readonly<Record<string, string>> = {
   ":": "00000/01100/01100/00000/01100/01100/00000",
 };
 
-const GLYPH_WIDTH = 5;
-const GLYPH_HEIGHT = 7;
+/**
+ * One letter's pixels, for anybody who wants to check what was drawn.
+ *
+ * <p>Exported so a test can rebuild a letter off the boxes and hold it against
+ * this. Measuring how wide each row came out is not the same check: an E is the
+ * same widths upside down, and widths cannot see a left to right mirror at all.
+ */
+export function glyph(character: string): readonly string[] | undefined {
+  return GLYPHS[character.toUpperCase()]?.split("/");
+}
+
+export const GLYPH_WIDTH = 5;
+export const GLYPH_HEIGHT = 7;
 /** Blank columns between letters, and the width of a space. */
 const TRACKING = 1;
 const SPACE = 3;
@@ -226,10 +237,17 @@ export function plateOf(
             box: [
               at + from * pixel,
               floor,
-              top - (line + 1) * pixel,
+              // The writing lies flat and faces up, so it is read by somebody
+              // standing at the front looking down at it -- and for them the
+              // top of a letter is the edge furthest away. The first row of a
+              // glyph therefore goes at the lowest z, nearest the build, and
+              // the last row at the plate's own front edge. Laid out the other
+              // way about, as it was, every letter is mirrored in a line drawn
+              // across it.
+              top - (GLYPH_HEIGHT - line) * pixel,
               at + column * pixel,
               floor + RELIEF * pixel,
-              top - line * pixel,
+              top - (GLYPH_HEIGHT - 1 - line) * pixel,
             ],
             slot: options.labelSlot,
           });
