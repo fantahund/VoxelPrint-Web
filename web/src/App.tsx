@@ -86,6 +86,7 @@ const NO_COLOURS: SceneColours = {
   boxes: new Float32Array(0),
   meshes: [],
   materialColours: false,
+  corners: [],
 };
 
 /** Where the filament colours come from. */
@@ -551,7 +552,7 @@ function Download({
   unit,
   source,
   removed,
-  onPlate,
+  onPrint,
 }: {
   model: VoxelModel;
   slots: readonly FilamentSlot[];
@@ -582,7 +583,12 @@ function Download({
    * <p>The settings live here because this is where the size in millimetres
    * lives, and a plate two millimetres thick means nothing without it.
    */
-  onPlate: (options: PlateOptions, millimetresPerBlock: number) => void;
+  onPrint: (settings: {
+    plate: PlateOptions;
+    millimetresPerBlock: number;
+    /** Whether a face may print in a different filament from its block. */
+    perFace: boolean;
+  }) => void;
 }): React.ReactElement {
   const [millimetres, setMillimetres] = useState(startingSize);
   const [plate, setPlate] = useState<Plate>("off");
@@ -638,7 +644,10 @@ function Download({
     [plate, plateThickness, plateMargin, label, labelSize, slots.length],
   );
 
-  useEffect(() => onPlate(plateOptions, millimetres), [onPlate, plateOptions, millimetres]);
+  useEffect(
+    () => onPrint({ plate: plateOptions, millimetresPerBlock: millimetres, perFace }),
+    [onPrint, plateOptions, millimetres, perFace],
+  );
 
   // A fresh plan or a different setting makes whatever was built stale, and
   // whatever was found about it too.
@@ -1540,8 +1549,19 @@ export default function App(): React.ReactElement {
    * is set, and the preview, which has to show what will actually be printed.
    */
   const [plate, setPlate] = useState<{ options: PlateOptions; scale: number } | null>(null);
-  const takePlate = useCallback(
-    (options: PlateOptions, scale: number) => setPlate({ options, scale }),
+  /**
+   * Whether the preview shows a colour per face, as the print will.
+   *
+   * <p>Set from the print panel, because that is where it is chosen. A setting
+   * that changes what comes out of the printer and not what is on screen is a
+   * setting nobody can judge.
+   */
+  const [perFace, setPerFace] = useState(true);
+  const takePrint = useCallback(
+    (settings: { plate: PlateOptions; millimetresPerBlock: number; perFace: boolean }) => {
+      setPlate({ options: settings.plate, scale: settings.millimetresPerBlock });
+      setPerFace(settings.perFace);
+    },
     [],
   );
   const [busy, setBusy] = useState(false);
@@ -1991,8 +2011,13 @@ export default function App(): React.ReactElement {
       const slot = slots[assignment[id] ?? 0];
       return slot?.colour ?? 0x9a9a9a;
     });
-    return colourise(model, perPaletteIndex, false);
-  }, [model, slots, assignment, colourMode]);
+    return colourise(
+      model,
+      perPaletteIndex,
+      false,
+      perFace ? slots.map((slot) => slot.colour) : undefined,
+    );
+  }, [model, slots, assignment, colourMode, perFace]);
 
   /**
    * The plate, worked out once, with its shape and its colours kept apart.
@@ -2376,7 +2401,7 @@ export default function App(): React.ReactElement {
                     // draws with a new model it is already the new selection.
                     source={sourceRef.current}
                     removed={removed}
-                    onPlate={takePlate}
+                    onPrint={takePrint}
                   />
                   {project !== null && (
                     <>

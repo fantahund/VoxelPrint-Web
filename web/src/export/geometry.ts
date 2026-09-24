@@ -1,4 +1,4 @@
-import { oklabDistance, toOklab, type Oklab } from "../colour";
+import { nearestOf, toOklab, type Oklab } from "../colour";
 import type { VoxelModel } from "../viewer/buildVoxels";
 import { plateOf, type PlateOptions, type PlatePart } from "./plate";
 
@@ -381,7 +381,7 @@ export function solidsBySlot(
       slotPlaces === null
         ? null
         : Array.from({ length: faces }, (_, face) =>
-            slotNearest(mesh.faceColours[face] ?? 0x9a9a9a, slotPlaces),
+            nearestOf(mesh.faceColours[face] ?? 0x9a9a9a, slotPlaces),
           );
 
     // What the block is not, it may still be made of: the boxes of its own
@@ -520,26 +520,6 @@ function addPlate(
   }
 }
 
-/**
- * The filament nearest a colour.
- *
- * <p>In Oklab, the same space the palette was worked out in, so a face going to
- * the nearest filament agrees with the clustering that chose the filaments.
- */
-function slotNearest(colour: number, slots: readonly Oklab[]): number {
-  const want = toOklab(colour);
-  let best = 0;
-  let closest = Infinity;
-  for (let slot = 0; slot < slots.length; slot++) {
-    const gap = oklabDistance(slots[slot] as Oklab, want);
-    if (gap < closest) {
-      closest = gap;
-      best = slot;
-    }
-  }
-  return best;
-}
-
 /** Which of the six sides of a cube a face points at, or null for anything else. */
 function sideOf(normal: Point): number | null {
   for (let axis = 0; axis < 3; axis++) {
@@ -605,7 +585,7 @@ function sidesOfMesh(
     if (area <= 0) {
       continue;
     }
-    const slot = slotNearest(mesh.faceColours[face] ?? 0x9a9a9a, slots);
+    const slot = nearestOf(mesh.faceColours[face] ?? 0x9a9a9a, slots);
     const tally = votes[side] as Map<number, number>;
     tally.set(slot, (tally.get(slot) ?? 0) + area);
   }

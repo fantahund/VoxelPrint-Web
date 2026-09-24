@@ -84,3 +84,24 @@ export function oklabDistance(a: Oklab, b: Oklab): number {
   const db = a.b - b.b;
   return dl * dl + da * da + db * db;
 }
+
+/**
+ * Which of a set of colours is nearest, as an index into it.
+ *
+ * <p>The places are passed already converted, because the question is asked of
+ * tens of thousands of faces against the same handful of filaments and
+ * converting those again each time is the whole cost.
+ */
+export function nearestOf(colour: number, places: readonly Oklab[]): number {
+  const want = toOklab(colour);
+  let best = 0;
+  let closest = Infinity;
+  for (let i = 0; i < places.length; i++) {
+    const gap = oklabDistance(places[i] as Oklab, want);
+    if (gap < closest) {
+      closest = gap;
+      best = i;
+    }
+  }
+  return best;
+}

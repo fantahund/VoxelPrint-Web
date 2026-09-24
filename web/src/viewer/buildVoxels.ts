@@ -1,4 +1,4 @@
-import { srgbToLinear } from "../colour";
+import { nearestOf, srgbToLinear, toOklab } from "../colour";
 import { colourFor, isAir, UNKNOWN_COLOUR } from "./blockColors";
 import type { BlockModels, ShapeBox, StructureInfo } from "../types";
 
@@ -541,6 +541,15 @@ export interface SceneColours {
    * colour comes through unchanged rather than being tinted by it.
    */
   readonly materialColours: boolean;
+  /**
+   * A colour per corner to draw a mesh with, or null to use its own.
+   *
+   * <p>What a colour per face looks like: a grass block is one instance and
+   * cannot be two colours, so the colour has to come off the corners instead.
+   * Null everywhere when every face of a block prints in the same filament,
+   * which is the cheaper path and the usual one.
+   */
+  readonly corners: ReadonlyArray<Float32Array | null>;
 }
 
 /**
@@ -552,6 +561,13 @@ export function colourise(
   model: VoxelModel,
   colourOfPaletteIndex: readonly number[],
   materialColours: boolean,
+  /**
+   * The filaments, for showing a colour per face rather than per block.
+   *
+   * <p>Left out to draw every face of a block in the one colour its type is
+   * assigned to, which is what the preview did before faces had their own.
+   */
+  slotColours?: readonly number[],
 ): SceneColours {
   const boxes = new Float32Array(model.boxes * 3);
   for (let i = 0; i < model.boxes; i++) {
@@ -579,7 +595,54 @@ export function colourise(
     return colours;
   });
 
-  return { boxes, meshes, materialColours };
+  // A colour per face, worked out where it is asked for and where a block's
+  // faces actually disagree. A mesh whose faces all want the same filament is
+  // left alone: one colour on the instance is cheaper than six per face.
+  const places =
+    materialColours || slotColours === undefined || slotColours.length === 0
+      ? null
+      : slotColours.map(toOklab);
+  const corners: Array<Float32Array | null> = model.meshes.map((mesh) => {
+    if (places === null) {
+      return null;
+    }
+    const faces = mesh.faceColours.length;
+    const slots = new Uint8Array(faces);
+    let differ = false;
+    for (let face = 0; face < faces; face++) {
+      slots[face] = nearestOf(mesh.faceColours[face] ?? UNKNOWN_COLOUR, places);
+      if (slots[face] !== slots[0]) {
+        differ = true;
+      }
+    }
+    if (!differ) {
+      return null;
+    }
+    // Six corners a face, in the order buildMesh wound them.
+    const tint = new Float32Array(faces * 6 * 3);
+    for (let face = 0; face < faces; face++) {
+      const colour = (slotColours ?? [])[slots[face] as number] ?? UNKNOWN_COLOUR;
+      const red = srgbToLinear(((colour >> 16) & 0xff) / 255);
+      const green = srgbToLinear(((colour >> 8) & 0xff) / 255);
+      const blue = srgbToLinear((colour & 0xff) / 255);
+      for (let corner = 0; corner < 6; corner++) {
+        const at = (face * 6 + corner) * 3;
+        tint[at] = red;
+        tint[at + 1] = green;
+        tint[at + 2] = blue;
+      }
+    }
+    return tint;
+  });
+
+  // A mesh drawn off its corners must not be tinted by its instance as well.
+  corners.forEach((tint, index) => {
+    if (tint !== null) {
+      (meshes[index] as Float32Array).fill(1);
+    }
+  });
+
+  return { boxes, meshes, materialColours, corners };
 }
 
 /** Unpacks indices.bin according to the width the server chose. */

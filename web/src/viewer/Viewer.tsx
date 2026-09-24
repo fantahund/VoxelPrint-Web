@@ -510,22 +510,36 @@ export default function Viewer({
       return;
     }
 
-    // Material colours come from the geometry, filament colours from the
-    // instance. Only one of the two may speak at a time, or a red filament
-    // would show through as dark red oak rather than as red.
-    if (current.meshMaterial.vertexColors !== colours.materialColours) {
-      current.meshMaterial.vertexColors = colours.materialColours;
+    // Colours reach a mesh two ways: off its corners, which is how a material
+    // or a colour per face speaks, and off the instance, which is how a whole
+    // block does. Only one of the two may speak at a time, or a red filament
+    // shows through as dark red oak rather than as red.
+    const offCorners =
+      colours.materialColours || colours.corners.some((corner) => corner !== null);
+    if (current.meshMaterial.vertexColors !== offCorners) {
+      current.meshMaterial.vertexColors = offCorners;
       current.meshMaterial.needsUpdate = true;
     }
 
     for (let i = 0; i < current.meshes.length; i++) {
-      const attribute = current.meshes[i]?.instanceColor;
+      const mesh = current.meshes[i];
+      const attribute = mesh?.instanceColor;
       const next = colours.meshes[i];
       if (attribute == null || next === undefined) {
         continue;
       }
       attribute.array.set(next.subarray(0, attribute.array.length));
       attribute.needsUpdate = true;
+
+      // What the corners say: the filament of each face where they differ, and
+      // the material's own colour where they do not.
+      const corner = mesh?.geometry.getAttribute("color");
+      const own = model.meshes[i]?.colours;
+      const wanted = colours.corners[i] ?? own;
+      if (corner !== undefined && wanted !== undefined) {
+        corner.array.set(wanted.subarray(0, corner.array.length));
+        corner.needsUpdate = true;
+      }
     }
 
     const boxes = current.boxes?.instanceColor;
@@ -548,7 +562,7 @@ export default function Viewer({
       slab.needsUpdate = true;
     }
     // After a rebuild as well, which is what the generation is for.
-  }, [colours, plateColours, generation]);
+  }, [colours, plateColours, generation, model]);
 
   return <div className="viewer" ref={hostRef} />;
 }
