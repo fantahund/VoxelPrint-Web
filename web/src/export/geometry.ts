@@ -1,4 +1,5 @@
 import type { VoxelModel } from "../viewer/buildVoxels";
+import { plateOf, type PlateOptions, type PlatePart } from "./plate";
 
 /**
  * Turns a build into solids a printer can be given.
@@ -31,6 +32,8 @@ export interface GeometryOptions {
   readonly geometry: Geometry;
   /** How thick a shell's walls are, in millimetres. Ignored when solid. */
   readonly wallMillimetres: number;
+  /** The slab to stand the build on, where there is one. */
+  readonly plate?: PlateOptions;
 }
 
 /**
@@ -125,7 +128,10 @@ export function solidsBySlot(
   options: GeometryOptions,
 ): Solid[][] {
   const scale = options.millimetresPerBlock;
-  const lift = (model.size.height / 2) * scale;
+  const plate = options.plate === undefined ? [] : plateOf(model, scale, options.plate);
+  // The build stands on the plate, so the plate is what stands on the bed.
+  const under = plate.length === 0 ? 0 : -model.size.height / 2 - (plate[0]?.box[1] as number);
+  const lift = (model.size.height / 2 + under) * scale;
   const grouped: Solid[][] = Array.from({ length: slotCount }, () => []);
 
   const place = (x: number, y: number, z: number): Point => [
@@ -187,6 +193,7 @@ export function solidsBySlot(
   }
 
   if (options.geometry !== "shell") {
+    addPlate(grouped, plate, slotCount, place);
     return grouped;
   }
 
@@ -404,7 +411,35 @@ export function solidsBySlot(
   for (const { slot, corners, normal } of mergeCoplanar(hideBackToBack(faces))) {
     (grouped[slot] as Solid[]).push(thicken(corners, normal, wall));
   }
+  addPlate(grouped, plate, slotCount, place);
   return grouped;
+}
+
+/**
+ * Puts the plate and its letters in with the rest.
+ *
+ * <p>Whole boxes rather than faces given walls: a plate is a solid thing, and a
+ * letter three quarters of a millimetre proud has nothing to be hollow about.
+ */
+function addPlate(
+  grouped: Solid[][],
+  plate: readonly PlatePart[],
+  slotCount: number,
+  place: (x: number, y: number, z: number) => Point,
+): void {
+  for (const part of plate) {
+    const slot = Math.min(Math.max(part.slot, 0), slotCount - 1);
+    const box = part.box;
+    (grouped[slot] as Solid[]).push(
+      CORNERS.map((corner) =>
+        place(
+          corner[0] === 0 ? box[0] : box[3],
+          corner[1] === 0 ? box[1] : box[4],
+          corner[2] === 0 ? box[2] : box[5],
+        ),
+      ),
+    );
+  }
 }
 
 /** A face on its way to becoming a wall. */

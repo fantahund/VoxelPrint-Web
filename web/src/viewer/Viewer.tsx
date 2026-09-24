@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { srgbToLinear } from "../colour";
+import type { PlateBox } from "../export/plate";
 import type { SceneColours, VoxelModel } from "./buildVoxels";
 
 /** What a right click in the preview landed on. */
@@ -72,11 +74,20 @@ interface Build {
 export default function Viewer({
   model,
   colours,
+  plate,
   onPick,
   frame,
 }: {
   model: VoxelModel;
   colours: SceneColours;
+  /**
+   * The slab under the build and its letters, each with the colour it prints in.
+   *
+   * <p>Drawn here rather than left to the writers so that what is on screen is
+   * what comes out of the printer. It is not part of the model: nothing can be
+   * picked off it, and it is no block of anybody's build.
+   */
+  plate?: ReadonlyArray<{ box: PlateBox; colour: number }>;
   /** Called when a block is right clicked, or null to leave picking off. */
   onPick?: ((pick: Pick) => void) | null;
   /** Changes when the view should be framed afresh, such as for a new project. */
@@ -360,6 +371,37 @@ export default function Viewer({
       meshes.push(mesh);
     }
 
+    // The plate, as plain boxes of its own colour. Kept out of the instanced
+    // build above because it is not made of blocks and must not be picked.
+    if (plate !== undefined && plate.length > 0) {
+      const geometry = new THREE.BoxGeometry(1, 1, 1);
+      const material = new THREE.MeshLambertMaterial();
+      disposables.push(geometry, material);
+      const slab = new THREE.InstancedMesh(geometry, material, plate.length);
+      const tints = new THREE.InstancedBufferAttribute(new Float32Array(plate.length * 3), 3);
+      slab.instanceColor = tints;
+      const middle = new THREE.Vector3();
+      const size = new THREE.Vector3();
+      const still = new THREE.Quaternion();
+      plate.forEach((part, i) => {
+        const [x0, y0, z0, x1, y1, z1] = part.box;
+        middle.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+        size.set(x1 - x0, y1 - y0, z1 - z0);
+        matrix.compose(middle, still, size);
+        slab.setMatrixAt(i, matrix);
+        tints.setXYZ(
+          i,
+          srgbToLinear(((part.colour >> 16) & 0xff) / 255),
+          srgbToLinear(((part.colour >> 8) & 0xff) / 255),
+          srgbToLinear((part.colour & 0xff) / 255),
+        );
+      });
+      slab.instanceMatrix.needsUpdate = true;
+      tints.needsUpdate = true;
+      slab.raycast = () => undefined;
+      stage.build.add(slab);
+    }
+
     // One instance per box, scaled from the unit cube. A stair is two of them,
     // a fence several, a plain block one at full size.
     let boxes: THREE.InstancedMesh | null = null;
@@ -418,7 +460,7 @@ export default function Viewer({
     };
     // Colours have an effect of their own, and must not rebuild the geometry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model]);
+  }, [model, plate]);
 
   // --- framing, once per project ---------------------------------------------
   useEffect(() => {

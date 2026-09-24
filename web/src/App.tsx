@@ -58,6 +58,14 @@ import { buildThreeMf, type ThreeMfFile } from "./export/threeMf";
 import { buildStl, type StlFile } from "./export/stl";
 import type { Geometry } from "./export/geometry";
 import {
+  labelFit,
+  plateOf,
+  plateSpan,
+  readable,
+  type Plate,
+  type PlateOptions,
+} from "./export/plate";
+import {
   blockIdOf,
   buildVoxels,
   colourise,
@@ -453,6 +461,7 @@ function Download({
   name,
   startingSize,
   unit,
+  onPlate,
 }: {
   model: VoxelModel;
   slots: readonly FilamentSlot[];
@@ -469,8 +478,20 @@ function Download({
   startingSize: number;
   /** What one cell is called, which is not a block when it is a texel. */
   unit: string;
+  /**
+   * Told the plate, so the preview can stand the build on the same one.
+   *
+   * <p>The settings live here because this is where the size in millimetres
+   * lives, and a plate two millimetres thick means nothing without it.
+   */
+  onPlate: (options: PlateOptions, millimetresPerBlock: number) => void;
 }): React.ReactElement {
   const [millimetres, setMillimetres] = useState(startingSize);
+  const [plate, setPlate] = useState<Plate>("off");
+  const [plateThickness, setPlateThickness] = useState(2);
+  const [plateMargin, setPlateMargin] = useState(2);
+  const [label, setLabel] = useState(name);
+  const [labelSize, setLabelSize] = useState(6);
   const [geometry, setGeometry] = useState<Geometry>("shell");
   const [wall, setWall] = useState(1.2);
   /**
@@ -485,17 +506,31 @@ function Download({
   const [file, setFile] = useState<Built | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
 
+  /** The plate as the rest of the site wants it, whole rather than in pieces. */
+  const plateOptions: PlateOptions = useMemo(
+    () => ({
+      plate,
+      plateMillimetres: plateThickness,
+      plateMargin,
+      label,
+      labelMillimetres: labelSize,
+      // The last two filaments, which is where somebody who wanted a plate in
+      // its own colour would have put it. Both are clamped to what there is.
+      plateSlot: Math.max(slots.length - 2, 0),
+      labelSlot: Math.max(slots.length - 1, 0),
+    }),
+    [plate, plateThickness, plateMargin, label, labelSize, slots.length],
+  );
+
+  useEffect(() => onPlate(plateOptions, millimetres), [onPlate, plateOptions, millimetres]);
+
   // A fresh plan or a different setting makes whatever was built stale.
   useEffect(
     () => setFile(null),
-    [model, slots, assignment, millimetres, geometry, wall, carryColours],
+    [model, slots, assignment, millimetres, geometry, wall, carryColours, plateOptions],
   );
 
-  const printed = [
-    model.size.width * millimetres,
-    model.size.depth * millimetres,
-    model.size.height * millimetres,
-  ];
+  const printed = plateSpan(model, millimetres, plateOptions).map(Math.round);
 
   const save = (kind: Kind): void => {
     setFailure(null);
@@ -504,6 +539,7 @@ function Download({
         millimetresPerBlock: millimetres,
         geometry,
         wallMillimetres: wall,
+        plate: plateOptions,
         name,
         carryColours,
       };
@@ -619,6 +655,165 @@ function Download({
             </Box>
           )}
         </Flex>
+
+        <Box>
+          <Text as="div" size="1" weight="medium" mb="1">
+            Stand
+          </Text>
+          <Flex gap="2" wrap="wrap">
+            <Button
+              size="1"
+              variant={plate === "off" ? "solid" : "soft"}
+              onClick={() => setPlate("off")}
+            >
+              None
+            </Button>
+            <Button
+              size="1"
+              variant={plate === "plain" ? "solid" : "soft"}
+              onClick={() => setPlate("plain")}
+            >
+              Plate
+            </Button>
+            <Button
+              size="1"
+              variant={plate === "labelled" ? "solid" : "soft"}
+              onClick={() => setPlate("labelled")}
+            >
+              Plate and name
+            </Button>
+          </Flex>
+
+          {plate !== "off" && (
+            <Flex direction="column" gap="2" mt="2">
+              <Flex gap="3" wrap="wrap">
+                <Box style={{ flex: 1, minWidth: "6rem" }}>
+                  <Text as="div" size="1" color="gray" mb="1">
+                    Thickness
+                  </Text>
+                  <TextField.Root
+                    size="1"
+                    type="number"
+                    min={0.4}
+                    max={50}
+                    step={0.5}
+                    value={String(plateThickness)}
+                    aria-label="Plate thickness in millimetres"
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      if (Number.isFinite(next) && next > 0) {
+                        setPlateThickness(Math.min(next, 50));
+                      }
+                    }}
+                  >
+                    <TextField.Slot side="right">
+                      <Text size="1" color="gray">
+                        mm
+                      </Text>
+                    </TextField.Slot>
+                  </TextField.Root>
+                </Box>
+                <Box style={{ flex: 1, minWidth: "6rem" }}>
+                  <Text as="div" size="1" color="gray" mb="1">
+                    Overhang
+                  </Text>
+                  <TextField.Root
+                    size="1"
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={String(plateMargin)}
+                    aria-label="How far the plate reaches past the build, in millimetres"
+                    onChange={(event) => {
+                      const next = Number(event.target.value);
+                      if (Number.isFinite(next) && next >= 0) {
+                        setPlateMargin(Math.min(next, 100));
+                      }
+                    }}
+                  >
+                    <TextField.Slot side="right">
+                      <Text size="1" color="gray">
+                        mm
+                      </Text>
+                    </TextField.Slot>
+                  </TextField.Root>
+                </Box>
+              </Flex>
+
+              {plate === "labelled" && (
+                <>
+                  <TextField.Root
+                    size="1"
+                    value={label}
+                    placeholder="What it says"
+                    aria-label="What is written on the plate"
+                    onChange={(event) => setLabel(event.target.value)}
+                  />
+                  <Flex gap="3" align="center">
+                    <Box style={{ flex: 1, minWidth: "6rem" }}>
+                      <TextField.Root
+                        size="1"
+                        type="number"
+                        min={1}
+                        max={100}
+                        step={1}
+                        value={String(labelSize)}
+                        aria-label="Letter height in millimetres"
+                        onChange={(event) => {
+                          const next = Number(event.target.value);
+                          if (Number.isFinite(next) && next > 0) {
+                            setLabelSize(Math.min(next, 100));
+                          }
+                        }}
+                      >
+                        <TextField.Slot side="left">
+                          <Text size="1" color="gray">
+                            Letters
+                          </Text>
+                        </TextField.Slot>
+                        <TextField.Slot side="right">
+                          <Text size="1" color="gray">
+                            mm
+                          </Text>
+                        </TextField.Slot>
+                      </TextField.Root>
+                    </Box>
+                  </Flex>
+                  {readable(label) !== label.toUpperCase().replace(/\s+/g, " ").trim() && (
+                    <Text as="p" size="1" color="amber">
+                      It will read {readable(label) === "" ? "nothing" : `"${readable(label)}"`}:
+                      the alphabet is letters, digits and a little punctuation.
+                    </Text>
+                  )}
+                  {(() => {
+                    const fit = labelFit(model, millimetres, plateOptions);
+                    if (fit.pixel === 0 || fit.pixel >= 0.5) {
+                      return null;
+                    }
+                    return (
+                      <Text as="p" size="1" color="amber">
+                        That name only fits at {fit.height.toFixed(1)} mm tall, which is{" "}
+                        {fit.pixel.toFixed(2)} mm a pixel -- thinner than a nozzle. Shorten it, or
+                        give the plate more overhang.
+                      </Text>
+                    );
+                  })()}
+                </>
+              )}
+            </Flex>
+          )}
+
+          <Text as="p" size="1" color="gray" mt="1">
+            {plate === "off"
+              ? "Nothing under it. A build with parts that do not touch arrives as several pieces."
+              : plate === "plain"
+                ? "A slab under the whole build, so it comes off the bed in one piece."
+                : "The name stands proud on the front of the slab, in the last filament, so it prints flat and needs no supports."}
+          </Text>
+        </Box>
+
+        <Separator size="4" />
 
         <Box>
           <Text as="label" size="1">
@@ -1079,6 +1274,17 @@ export default function App(): React.ReactElement {
       ? "dark"
       : "light",
   );
+  /**
+   * The plate the build stands on, as the print panel has it set.
+   *
+   * <p>Held up here because two things want it: the writers, which is where it
+   * is set, and the preview, which has to show what will actually be printed.
+   */
+  const [plate, setPlate] = useState<{ options: PlateOptions; scale: number } | null>(null);
+  const takePlate = useCallback(
+    (options: PlateOptions, scale: number) => setPlate({ options, scale }),
+    [],
+  );
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [skinDragging, setSkinDragging] = useState(false);
@@ -1525,6 +1731,19 @@ export default function App(): React.ReactElement {
     return colourise(model, perPaletteIndex, false);
   }, [model, slots, assignment, colourMode]);
 
+  /** The plate in the colours of the filaments it is set to print in. */
+  const plateParts = useMemo(() => {
+    if (model === null || plate === null) {
+      return undefined;
+    }
+    const colourOf = (slot: number): number =>
+      slots[Math.min(Math.max(slot, 0), slots.length - 1)]?.colour ?? 0x9a9a9a;
+    return plateOf(model, plate.scale, plate.options).map((part) => ({
+      box: part.box,
+      colour: colourMode === "filament" ? colourOf(part.slot) : 0xb0b0b0,
+    }));
+  }, [model, plate, slots, colourMode]);
+
   return (
     <Theme
       appearance={appearance}
@@ -1776,6 +1995,7 @@ export default function App(): React.ReactElement {
                   <Viewer
                     model={model}
                     colours={colours}
+                    plate={plateParts}
                     onPick={setMenu}
                     frame={project?.id ?? "skin"}
                   />
@@ -1868,6 +2088,7 @@ export default function App(): React.ReactElement {
                     }
                     startingSize={skin === null ? 10 : 2}
                     unit={skin === null ? "Block" : "Voxel"}
+                    onPlate={takePlate}
                   />
                   {project !== null && (
                     <>
