@@ -49,6 +49,7 @@ export default function FilamentPicker({
   open,
   onOpenChange,
   slots,
+  basis,
   slot,
   onPick,
   onPickAll,
@@ -56,6 +57,15 @@ export default function FilamentPicker({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   slots: readonly FilamentSlot[];
+  /**
+   * The colour each filament had before a spool was chosen for it.
+   *
+   * <p>What the spools are matched against. Matching against what a filament is
+   * set to now means matching the second maker to the first maker's spools, and
+   * a plan sent through two catalogues drifts further from the build than one
+   * sent through either.
+   */
+  basis: readonly number[];
   /** Which filament is being chosen, or null to choose for all of them. */
   slot: number | null;
   onPick: (index: number, colour: LibraryColour) => void;
@@ -123,7 +133,7 @@ export default function FilamentPicker({
     [brand, material],
   );
 
-  const want = slot === null ? null : slots[slot]?.colour ?? 0x9a9a9a;
+  const want = slot === null ? null : basis[slot] ?? slots[slot]?.colour ?? 0x9a9a9a;
 
   const shown = useMemo(() => {
     if (query.trim() !== "") {
@@ -134,7 +144,10 @@ export default function FilamentPicker({
     return want === null ? pool.slice(0, SHOWN) : nearest(pool, want, SHOWN);
   }, [pool, query, want]);
 
-  const matches = useMemo(() => slots.map((one) => closest(pool, one.colour)), [pool, slots]);
+  const matches = useMemo(
+    () => slots.map((one, index) => closest(pool, basis[index] ?? one.colour)),
+    [pool, slots, basis],
+  );
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -213,16 +226,18 @@ export default function FilamentPicker({
               <>
                 <Text as="p" size="2" color="gray">
                   Every filament moves to the nearest {material ?? ""} spool{" "}
-                  {brand?.name ?? "this maker"} sells. The build keeps the colours it was
-                  planned in until you say so.
+                  {brand?.name ?? "this maker"} sells. Measured against what the build asked
+                  for, not against whichever maker was chosen last, so trying a second one
+                  is not a second rounding.
                 </Text>
                 <Flex direction="column" gap="1">
                   {slots.map((one, index) => {
                     const match = matches[index] ?? null;
-                    const off = match === null ? 0 : distance(match, one.colour);
+                    const from = basis[index] ?? one.colour;
+                    const off = match === null ? 0 : distance(match, from);
                     return (
                       <Flex key={index} align="center" gap="2">
-                        <Swatch colour={one.colour} />
+                        <Swatch colour={from} />
                         <Text size="1" color="gray" style={{ width: "1.5rem" }}>
                           {"→"}
                         </Text>

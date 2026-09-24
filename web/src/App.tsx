@@ -252,7 +252,9 @@ function Panel({
 
 function Filaments({
   slots,
+  basis,
   onSlots,
+  onSpools,
   count,
   onCount,
   source,
@@ -260,7 +262,18 @@ function Filaments({
   onReassign,
 }: {
   slots: readonly FilamentSlot[];
+  /**
+   * The colour each filament had before a spool was chosen for it.
+   *
+   * <p>What a spool is matched against, rather than whatever spool was chosen
+   * last time. Otherwise a plan sent through two catalogues is matched to the
+   * first catalogue rather than to the build.
+   */
+  basis: readonly number[];
+  /** A change somebody made by hand, which becomes what spools match against. */
   onSlots: (next: readonly FilamentSlot[]) => void;
+  /** Spools chosen from the library, which leaves the basis where it was. */
+  onSpools: (next: readonly FilamentSlot[]) => void;
   count: number;
   onCount: (next: number) => void;
   source: PaletteSource;
@@ -376,14 +389,21 @@ function Filaments({
         open={open}
         onOpenChange={setOpen}
         slots={slots}
+        basis={basis}
         slot={picking}
         onPick={(index, colour) =>
-          change(index, { colour: colourOf(colour), name: nameOf(colour) })
+          onSpools(
+            slots.map((slot, i) =>
+              i === index ? { colour: colourOf(colour), name: nameOf(colour) } : slot,
+            ),
+          )
         }
         onPickAll={(colours) =>
-          onSlots(
-            slots.map((slot) => {
-              const match = closest(colours, slot.colour);
+          onSpools(
+            slots.map((slot, i) => {
+              // Against what the build asked for, not against the spool this
+              // filament was last set to.
+              const match = closest(colours, basis[i] ?? slot.colour);
               return match === null ? slot : { colour: colourOf(match), name: nameOf(match) };
             }),
           )
@@ -1291,6 +1311,24 @@ export default function App(): React.ReactElement {
   /** Whether the preview shows the build or the print. */
   const [colourMode, setColourMode] = useState<"filament" | "minecraft">("filament");
   const [slots, setSlots] = useState<readonly FilamentSlot[]>(standardPalette(4));
+  /**
+   * What each filament was before anybody chose a spool for it.
+   *
+   * <p>Kept because choosing a spool is a rounding, and rounding a rounding
+   * drifts. Match a plan to one maker and then to another, and without this
+   * the second maker is matched to the first maker's spools rather than to the
+   * colours the build asked for -- so a build sent through two catalogues comes
+   * out further from itself than a build sent through either.
+   */
+  const [basis, setBasis] = useState<readonly number[]>(() =>
+    standardPalette(4).map((slot) => slot.colour),
+  );
+
+  /** A palette worked out afresh: the slots, and the basis they start from. */
+  const planSlots = useCallback((next: readonly FilamentSlot[]) => {
+    setSlots(next);
+    setBasis(next.map((slot) => slot.colour));
+  }, []);
   /** How many filaments the printer has, and where their colours come from. */
   const [slotCount, setSlotCount] = useState(4);
   const [paletteSource, setPaletteSource] = useState<PaletteSource>("build");
@@ -1479,7 +1517,7 @@ export default function App(): React.ReactElement {
       setModel(built3d);
       const { count, source } = settingsRef.current;
       const palette = paletteFor(built3d, count, source);
-      setSlots(palette);
+      planSlots(palette);
       setAssignment(autoAssign(colouredBlocks(built3d), palette));
     } catch (cause) {
       setModel(null);
@@ -1565,7 +1603,7 @@ export default function App(): React.ReactElement {
           // everything it does not mention onto the first filament without
           // saying so. Guessed values fill the gaps, saved ones override them.
           const guessed = autoAssign(colouredBlocks(built), saved.slots);
-          setSlots(saved.slots);
+          planSlots(saved.slots);
           setSlotCount(saved.slots.length);
           settingsRef.current = { ...settingsRef.current, count: saved.slots.length };
           setAssignment({ ...guessed, ...saved.assignment });
@@ -1573,7 +1611,7 @@ export default function App(): React.ReactElement {
         } else {
           const { count, source } = settingsRef.current;
           const palette = paletteFor(built, count, source);
-          setSlots(palette);
+          planSlots(palette);
           setAssignment(autoAssign(colouredBlocks(built), palette));
           setLoadedPlan(true);
         }
@@ -1774,11 +1812,11 @@ export default function App(): React.ReactElement {
       setSlotCount(count);
       setPaletteSource(source);
       if (model === null) {
-        setSlots(standardPalette(count));
+        planSlots(standardPalette(count));
         return;
       }
       const palette = paletteFor(model, count, source);
-      setSlots(palette);
+      planSlots(palette);
       setAssignment(autoAssign(colouredBlocks(model), palette));
     },
     [model],
@@ -2039,7 +2077,9 @@ export default function App(): React.ReactElement {
                 <>
                   <Filaments
                     slots={slots}
-                    onSlots={setSlots}
+                    basis={basis}
+                    onSlots={planSlots}
+                    onSpools={setSlots}
                     count={slotCount}
                     onCount={(next) => repalette(next, paletteSource)}
                     source={paletteSource}

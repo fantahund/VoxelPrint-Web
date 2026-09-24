@@ -21,6 +21,7 @@ import {
   ofMaterial,
   search,
   type Library,
+  type LibraryColour,
 } from "../web/src/slots/library.js";
 
 let problems = 0;
@@ -184,6 +185,59 @@ console.log(`${library.source} ${library.version}: ${library.brands.length} make
     } else {
       fail(`${strayed.length} matches inside PLA came back as something else`);
     }
+  }
+}
+
+// --- trying a second maker is not a second rounding --------------------------
+{
+  const village = [0x6a9c3e, 0xb08a4e, 0x7a7a7a, 0x8b5a2b, 0x9c7a4a, 0xc8e4e8, 0xe9ecec, 0x4a3219];
+  const of = (name: string): readonly LibraryColour[] => {
+    const brand = library.brands.find((one) => one.name === name);
+    return brand === undefined ? [] : ofMaterial(brand, "PLA");
+  };
+  const first = of("Bambu Lab");
+  const then = of("Prusament");
+
+  // What the plan would be if each maker were chosen straight from the build.
+  const straight = village.map((want) => closest(then, want));
+  // And what it would be if the second maker were matched to the first one's
+  // spools, which is what happens when the basis is not kept.
+  const chained = village.map((want) => {
+    const middle = closest(first, want);
+    return middle === null ? null : closest(then, colourOf(middle));
+  });
+
+  const straightOff = village.map((want, i) => {
+    const match = straight[i];
+    return match === undefined || match === null ? Infinity : distance(match, want);
+  });
+  const chainedOff = village.map((want, i) => {
+    const match = chained[i];
+    return match === undefined || match === null ? Infinity : distance(match, want);
+  });
+  const worseAt = village.filter((_, i) => (chainedOff[i] ?? 0) > (straightOff[i] ?? 0) + 1e-9).length;
+  const worst = Math.max(...chainedOff) - Math.max(...straightOff);
+
+  if (worseAt > 0) {
+    ok(
+      `matching through a maker first would be worse on ${worseAt} of ${village.length} colours ` +
+        `(worst ${Math.max(...straightOff).toFixed(3)} against ${Math.max(...chainedOff).toFixed(3)}), ` +
+        "which is why the basis is kept",
+    );
+  } else {
+    // Not a failure: it only says these two catalogues happen to agree.
+    ok(`these two catalogues are close enough that chaining costs nothing here (${worst.toFixed(4)})`);
+  }
+
+  const differ = village.filter((_, i) => {
+    const a = straight[i];
+    const b = chained[i];
+    return a !== null && b !== null && a !== undefined && b !== undefined && colourOf(a) !== colourOf(b);
+  }).length;
+  if (differ > 0) {
+    ok(`and it lands on a different spool for ${differ} of ${village.length}, so it is not a distinction without a difference`);
+  } else {
+    ok("the two routes happen to land on the same spools for this build");
   }
 }
 
