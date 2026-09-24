@@ -161,7 +161,10 @@ export function trim(all: All): Library {
         ),
       }))
       .filter((brand) => brand.colours.length > 0)
-      .sort((a, b) => b.colours.length - a.colours.length || a.name.localeCompare(b.name)),
+      // Alphabetical, because this is a list somebody looks their own maker up
+      // in. Case is not a sort order: eSUN belongs under E and colorFabb under
+      // C, not in a clump of their own after Z.
+      .sort((a, b) => a.name.localeCompare(b.name, "en", { sensitivity: "base" })),
   };
 }
 

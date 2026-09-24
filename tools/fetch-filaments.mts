@@ -48,7 +48,10 @@ writeFileSync(OUT, JSON.stringify(library));
 
 const total = brands.reduce((sum, brand) => sum + brand.colours.length, 0);
 console.log(`wrote ${OUT}: ${brands.length} brands, ${total} colours`);
+// The file is alphabetical, which is the order a picker wants; this is just
+// the summary, and the widest ranges are what is interesting about a refresh.
+const widest = [...brands].sort((a, b) => b.colours.length - a.colours.length);
 console.log("  the ten widest ranges:");
-for (const brand of brands.slice(0, 10)) {
+for (const brand of widest.slice(0, 10)) {
   console.log(`    ${brand.name.padEnd(24)} ${brand.colours.length}`);
 }
