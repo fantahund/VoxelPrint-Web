@@ -52,6 +52,8 @@ import {
   type FilamentSlot,
 } from "./slots/filament";
 import { derivePalette } from "./slots/palette";
+import FilamentPicker from "./slots/FilamentPicker";
+import { closest, colourOf, type LibraryColour } from "./slots/library";
 import { apply, describe, invert, removal, type Edit, type EditorState } from "./editor";
 import type { Pick } from "./viewer/Viewer";
 import { buildThreeMf, type ThreeMfFile } from "./export/threeMf";
@@ -269,6 +271,10 @@ function Filaments({
     onSlots(slots.map((slot, i) => (i === index ? { ...slot, ...patch } : slot)));
   };
 
+  /** Which filament the library is open for, or null for all of them. */
+  const [picking, setPicking] = useState<number | null>(null);
+  const [open, setOpen] = useState(false);
+
   return (
     <Panel
       title="Filaments"
@@ -299,6 +305,18 @@ function Filaments({
           <Button size="1" variant="outline" onClick={onReassign}>
             Re-assign
           </Button>
+          <Tooltip content="Move every filament to the nearest spool a maker actually sells">
+            <Button
+              size="1"
+              variant="outline"
+              onClick={() => {
+                setPicking(null);
+                setOpen(true);
+              }}
+            >
+              Real filament
+            </Button>
+          </Tooltip>
         </Flex>
 
         {slots.length < count && (
@@ -331,12 +349,56 @@ function Filaments({
                 aria-label={`Name of filament ${index + 1}`}
                 onChange={(event) => change(index, { name: event.target.value })}
               />
+              <Tooltip content="Choose a spool somebody sells">
+                <IconButton
+                  size="1"
+                  variant="soft"
+                  aria-label={`Choose a real filament for slot ${index + 1}`}
+                  onClick={() => {
+                    setPicking(index);
+                    setOpen(true);
+                  }}
+                >
+                  {"\u25A3"}
+                </IconButton>
+              </Tooltip>
             </Flex>
           ))}
         </Flex>
       </Flex>
+
+      <FilamentPicker
+        open={open}
+        onOpenChange={setOpen}
+        slots={slots}
+        slot={picking}
+        onPick={(index, colour) =>
+          change(index, { colour: colourOf(colour), name: nameOf(colour) })
+        }
+        onPickAll={(brand) =>
+          onSlots(
+            slots.map((slot) => {
+              const match = closest(brand, slot.colour);
+              return match === null ? slot : { colour: colourOf(match), name: nameOf(match) };
+            }),
+          )
+        }
+      />
     </Panel>
   );
+}
+
+/**
+ * What to call a slot that has been set to a real spool.
+ *
+ * <p>The colour's own name, and the product where the two are not already the
+ * same word: "Bambu Green" says which green, "PLA Matte" says which black.
+ */
+function nameOf(colour: LibraryColour): string {
+  return colour.product.toLowerCase().includes(colour.name.toLowerCase()) ||
+    colour.name.toLowerCase().includes(colour.product.toLowerCase())
+    ? colour.name
+    : `${colour.name} ${colour.product}`;
 }
 
 function Mapping({
