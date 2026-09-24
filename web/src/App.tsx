@@ -223,6 +223,63 @@ function Facts({ project }: { project: Project }): React.ReactElement {
 }
 
 /**
+ * A part of a panel that folds away, with what it is set to on the fold.
+ *
+ * <p>The print panel had grown to eight things stacked one on another, of which
+ * somebody touches two. Folded, each says its own name and its own answer --
+ * "Stand: plate and name" -- so nothing is hidden, only quiet. Open one and it
+ * is the same controls that were always there.
+ */
+function Section({
+  title,
+  summary,
+  open,
+  onOpen,
+  children,
+}: {
+  title: string;
+  /** What it is set to, shown when it is shut. */
+  summary: string;
+  open: boolean;
+  onOpen: (open: boolean) => void;
+  children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <Box>
+      <Flex
+        asChild
+        align="center"
+        justify="between"
+        gap="2"
+        py="1"
+        style={{ cursor: "pointer", width: "100%" }}
+      >
+        <button type="button" aria-expanded={open} onClick={() => onOpen(!open)}>
+          <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+            <Text size="1" color="gray" style={{ width: "0.75rem" }}>
+              {open ? "\u25BE" : "\u25B8"}
+            </Text>
+            <Text size="1" weight="medium">
+              {title}
+            </Text>
+          </Flex>
+          {!open && (
+            <Text size="1" color="gray" truncate style={{ minWidth: 0 }}>
+              {summary}
+            </Text>
+          )}
+        </button>
+      </Flex>
+      {open && (
+        <Box pl="4" pt="1">
+          {children}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+/**
  * A titled block in one of the side columns.
  *
  * <p>The panels are the same shape throughout, so they are one component rather
@@ -630,6 +687,9 @@ function Download({
    */
   const [findings, setFindings] = useState<Findings | null>(null);
   const [nozzle, setNozzle] = useState(NOZZLE);
+  /** Which section is unfolded, at most one, so the panel stays a panel. */
+  const [section, setSection] = useState<string | null>(null);
+  const opener = (which: string) => (open: boolean) => setSection(open ? which : null);
 
   /** The plate as the rest of the site wants it, whole rather than in pieces. */
   const plateOptions: PlateOptions = useMemo(
@@ -703,10 +763,12 @@ function Download({
       hint="A 3MF holds one part per filament, which any slicer can give an extruder to. An STL holds the same shape as one body."
     >
       <Flex direction="column" gap="3">
-        <Box>
-          <Text as="div" size="1" weight="medium" mb="1">
-            Geometry
-          </Text>
+        <Section
+          title="Shape"
+          summary={geometry === "shell" ? "Detailed shell" : "Solid shapes"}
+          open={section === "shape"}
+          onOpen={opener("shape")}
+        >
           <Flex gap="2" wrap="wrap">
             <Tooltip content="Follow the models, as the preview draws them">
               <Button
@@ -732,7 +794,7 @@ function Download({
               ? "Every face given a wall, so a torch is a torch. Hollow, so thin parts are fragile."
               : "One closed box per part of a block's shape. Sturdy and much smaller, but a tilted torch comes out upright."}
           </Text>
-        </Box>
+        </Section>
 
         <Flex gap="3" wrap="wrap">
           <Box style={{ flex: 1, minWidth: "7rem" }}>
@@ -791,10 +853,12 @@ function Download({
           )}
         </Flex>
 
-        <Box>
-          <Text as="div" size="1" weight="medium" mb="1">
-            Stand
-          </Text>
+        <Section
+          title="Stand"
+          summary={plate === "off" ? "None" : plate === "plain" ? "Plate" : `Plate saying ${readable(label) || "nothing"}`}
+          open={section === "stand"}
+          onOpen={opener("stand")}
+        >
           <Flex gap="2" wrap="wrap">
             <Button
               size="1"
@@ -946,11 +1010,14 @@ function Download({
                 ? "A slab under the whole build, so it comes off the bed in one piece."
                 : "The name stands proud on the front of the slab, in the last filament, so it prints flat and needs no supports."}
           </Text>
-        </Box>
+        </Section>
 
-        <Separator size="4" />
-
-        <Box>
+        <Section
+          title="Colours"
+          summary={`${perFace ? "Per face" : "Per block"}, ${carryColours ? "palette carried" : "slots only"}`}
+          open={section === "colours"}
+          onOpen={opener("colours")}
+        >
           <Text as="label" size="1">
             <Flex gap="2" align="center">
               <Checkbox checked={perFace} onCheckedChange={(next) => setPerFace(next === true)} />
@@ -971,9 +1038,9 @@ function Download({
                 : " Put a type in a filament by hand and it stays there throughout, faces and all."}
             </Text>
           )}
-        </Box>
 
-        <Box>
+          <Separator size="4" my="2" />
+
           <Text as="label" size="1">
             <Flex gap="2" align="center">
               <Checkbox
@@ -988,7 +1055,7 @@ function Download({
               ? "The 3MF brings the palette with it, so the build opens in the colours it was planned in. A slicer that finds a filament set in a file may push aside the profiles set up there; untick this if yours does."
               : "Each part names only the slot it prints in, and the printer decides what colour is loaded there."}
           </Text>
-        </Box>
+        </Section>
 
         <Separator size="4" />
 
@@ -1031,11 +1098,19 @@ function Download({
 
         <Separator size="4" />
 
-        <Box>
-          <Flex align="center" justify="between" gap="2" mb="1">
-            <Text as="div" size="1" weight="medium">
-              Before you print
-            </Text>
+        <Section
+          title="Before you print"
+          summary={
+            findings === null
+              ? "not checked"
+              : findings.loose === 0 && findings.thin === 0
+                ? "nothing to report"
+                : `${findings.loose > 0 ? `${findings.pieces.length} pieces` : ""}${findings.loose > 0 && findings.thin > 0 ? ", " : ""}${findings.thin > 0 ? `${findings.thin} too thin` : ""}`
+          }
+          open={section === "checks"}
+          onOpen={opener("checks")}
+        >
+          <Flex align="center" justify="end" gap="2" mb="1">
             <TextField.Root
               size="1"
               type="number"
@@ -1105,12 +1180,12 @@ function Download({
                 good={`${numberFormat.format(findings.overhanging)} blocks stand on nothing, which supports will hold easily.`}
                 bad_={`${numberFormat.format(findings.overhanging)} blocks stand on nothing — a quarter of the build. Expect a lot of supports and a rough underside.`}
               />
-              <Button size="1" variant="ghost" onClick={() => setFindings(null)}>
+              <Button size="1" variant="soft" onClick={() => setFindings(null)}>
                 Check again
               </Button>
             </Flex>
           )}
-        </Box>
+        </Section>
       </Flex>
     </Panel>
   );

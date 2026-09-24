@@ -252,3 +252,14 @@ body {
 .dropzone .target.thin {
   padding: 1.25rem 1rem;
 }
+
+/* A section's heading is a button, and a button brings a browser's own look
+   with it: none of that belongs on a row of text. */
+.side button[aria-expanded] {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: start;
+}
