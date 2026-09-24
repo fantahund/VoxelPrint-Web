@@ -50,11 +50,25 @@ export function buildKit(
 
   parts.forEach((piece, index) => {
     const base = fileName(piece, index);
+    // Moved onto the bed before it is written. The piece keeps where it belongs
+    // for the instructions to draw; what goes in the file is where it prints.
+    const standing = piece.solids.map((group) =>
+      group.map((solid) =>
+        solid.map(
+          (corner) =>
+            [
+              (corner[0] as number) + (piece.onto[0] as number),
+              (corner[1] as number) + (piece.onto[1] as number),
+              (corner[2] as number) + (piece.onto[2] as number),
+            ] as unknown as (typeof solid)[number],
+        ),
+      ),
+    );
     if (kind === "3mf") {
       const built = buildThreeMf(model, slots, assignment, {
         ...options,
         name: `${name} ${piece.name}`,
-        grouped: piece.solids,
+        grouped: standing,
       });
       files[`${base}.3mf`] = built.bytes;
       triangles += built.triangles;
@@ -62,7 +76,7 @@ export function buildKit(
       const built = buildStl(model, slots, assignment, {
         ...options,
         name: `${name} ${piece.name}`,
-        grouped: piece.solids,
+        grouped: standing,
       });
       files[`${base}.stl`] = built.bytes;
       triangles += built.triangles;

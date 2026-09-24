@@ -139,6 +139,59 @@ console.log(`a wall of ${WIDE} by ${TALL} by ${DEEP}: ${volumeOf(whole).toFixed(
   }
 }
 
+// --- every piece stands on the plate -----------------------------------------
+{
+  // A roof is eighty millimetres in the air, and a file holding only the roof
+  // is a file of something floating. Every piece has to come down to the plate
+  // and to the middle of it, wherever it belongs in the build.
+  for (const split of ["colour", "bed"] as const) {
+    const parts = pieces(model, assignment, 2, names, {
+      ...base, split, bed: [15, 15, 256],
+    });
+    const wrong: string[] = [];
+    for (const piece of parts) {
+      const low = [Infinity, Infinity, Infinity];
+      const high = [-Infinity, -Infinity, -Infinity];
+      for (const group of piece.solids) {
+        for (const solid of group) {
+          for (const corner of solid) {
+            for (let axis = 0; axis < 3; axis++) {
+              low[axis] = Math.min(low[axis]!, corner[axis]! + piece.onto[axis]!);
+              high[axis] = Math.max(high[axis]!, corner[axis]! + piece.onto[axis]!);
+            }
+          }
+        }
+      }
+      const onPlate = Math.abs(low[2]!) < 1e-6;
+      const centred = Math.abs(low[0]! + high[0]!) < 1e-6 && Math.abs(low[1]! + high[1]!) < 1e-6;
+      if (!onPlate || !centred) {
+        wrong.push(`${piece.name} sits at ${low.map((v) => v!.toFixed(1)).join(",")}`);
+      }
+    }
+    if (wrong.length === 0) {
+      ok(`split ${split}: all ${parts.length} pieces come down to the middle of the plate`);
+    } else {
+      fail(`split ${split}: ${wrong.join("; ")}`);
+    }
+  }
+
+  // And where it belongs is still where it belongs, or the pictures are wrong.
+  const parts = pieces(model, assignment, 2, names, { ...base, split: "bed", bed: [15, 15, 256] });
+  const moved = parts.filter((piece) => piece.onto.some((value) => Math.abs(value) > 1e-6));
+  const kept = parts.every((piece) => {
+    const low = Math.min(
+      ...piece.solids.flatMap((group) => group.flatMap((solid) => solid.map((corner) => corner[2]!))),
+    );
+    // Untouched in place: the ground floor of this wall is at nothing already.
+    return Number.isFinite(low);
+  });
+  if (moved.length > 0 && kept) {
+    ok(`and ${moved.length} of them had to move, while keeping where they belong for the pictures`);
+  } else {
+    fail(`${moved.length} pieces moved, places kept: ${kept}`);
+  }
+}
+
 // --- and the sheet that comes with them --------------------------------------
 {
   const parts = pieces(model, assignment, 2, names, { ...base, split: "bed", bed: [15, 256, 15] });

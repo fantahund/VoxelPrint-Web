@@ -322,7 +322,14 @@ export function instructions(
       0.35,
     );
     y += 10;
-    page.text(MARGIN, y, 9, PLAIN, `One block is ${millimetresPerBlock} mm.`, 0.35);
+    page.text(
+    MARGIN,
+    y,
+    9,
+    PLAIN,
+    `One block is ${millimetresPerBlock} mm. Every file sits on the plate; the pictures show where the part goes.`,
+    0.35,
+  );
     y += 16;
     page.rule(y);
     y += 18;

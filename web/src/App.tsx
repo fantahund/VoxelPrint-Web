@@ -1132,7 +1132,7 @@ function Download({
               variant={split === "colour" ? "solid" : "soft"}
               onClick={() => setSplit("colour")}
             >
-              By colour
+              By colour (beta)
             </Button>
             <Button
               size="1"
@@ -1179,8 +1179,8 @@ function Download({
             {split === "off"
               ? "One file, printed in one go, which wants a printer with as many filaments as the plan has."
               : split === "colour"
-                ? "One file per filament, so a printer with one extruder can still make this: print each in its own colour and glue them together. A sheet saying which is which comes in the archive."
-                : "Cut into tiles that fit, each still whole in itself, with a plan of where each one goes. The seams are straight lines to glue along."}
+                ? "One file per filament, so a printer with one extruder can still make this: print each in its own colour, then follow the booklet. Beta, and honestly so — a colour is scattered all over a build, so what comes out is a great many small parts, and some of them will not want to be glued to anything."
+                : "Cut into tiles that fit, each still whole in itself, with a booklet showing where each one goes. The seams are straight lines to glue along."}
           </Text>
         </Section>
 

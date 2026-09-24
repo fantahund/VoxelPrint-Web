@@ -30,13 +30,48 @@ export interface SplitOptions {
 /** One thing to print on its own. */
 export interface Piece {
   readonly name: string;
-  /** Solids per filament, in the same order the filaments are in. */
+  /**
+   * Solids per filament, in the same order the filaments are in.
+   *
+   * <p>Where the piece belongs in the finished build, not where it is printed.
+   * The instructions draw these, because a step has to show where a part goes;
+   * the writers move them by {@link onto} first, because a part has to be on
+   * the bed to be printed at all.
+   */
   readonly solids: readonly (readonly Solid[])[];
+  /**
+   * How far to move it to stand on the bed, in millimetres.
+   *
+   * <p>A build's roof is eighty millimetres in the air, and a file holding only
+   * the roof is a file of something floating eighty millimetres above the
+   * plate. Every piece is dropped to the plate and centred on it, which is
+   * where the whole build sits when it is not cut up.
+   */
+  readonly onto: readonly [number, number, number];
   /** Where it belongs, for the instructions: column, row, layer, or null. */
   readonly at: readonly [number, number, number] | null;
   /** How large it is, in millimetres. */
   readonly size: readonly [number, number, number];
   readonly bodies: number;
+}
+
+/**
+ * Where a piece has to be moved to stand on the bed, centred.
+ *
+ * <p>The same place the whole build sits when it is not cut up: middle of the
+ * plate, bottom at nothing. A piece left where it belongs in the build is a
+ * piece off the side of the bed, or in the air above it.
+ */
+function ontoBed(solids: readonly (readonly Solid[])[]): [number, number, number] {
+  const bounds = boundsOf(solids);
+  if (!Number.isFinite(bounds[0] as number)) {
+    return [0, 0, 0];
+  }
+  return [
+    -((bounds[0] as number) + (bounds[3] as number)) / 2,
+    -((bounds[1] as number) + (bounds[4] as number)) / 2,
+    -(bounds[2] as number),
+  ];
 }
 
 function boundsOf(solids: readonly (readonly Solid[])[]): number[] {
@@ -124,8 +159,16 @@ export function pieces(
   const grouped = solidsBySlot(model, assignment, slotCount, options);
 
   if (options.split === "off") {
+    // Not cut up at all: it is already where it prints.
     return [
-      { name: "whole", solids: grouped, at: null, size: sizeOf(grouped), bodies: count(grouped) },
+      {
+        name: "whole",
+        solids: grouped,
+        onto: [0, 0, 0],
+        at: null,
+        size: sizeOf(grouped),
+        bodies: count(grouped),
+      },
     ];
   }
 
@@ -141,6 +184,7 @@ export function pieces(
         return {
           name: `${slot + 1} ${slotNames[slot] ?? `Filament ${slot + 1}`}`,
           solids: only,
+          onto: ontoBed(only),
           at: null,
           size: sizeOf(only),
           bodies: group.length,
@@ -242,6 +286,7 @@ function tiles(
           (across[2] as number) > 1 ? ` level ${cell[2] + 1}` : ""
         }`,
         solids,
+        onto: ontoBed(solids),
         at: cell,
         size: sizeOf(solids),
         bodies: count(solids),
