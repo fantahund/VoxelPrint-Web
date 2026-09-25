@@ -191,5 +191,46 @@ if (off.bodies.length === 1 && off.bodies[0]?.slot === 0) {
   }
 }
 
+// --- asking for fewer groups than there are colours --------------------------
+{
+  // The printability check asks for one group, because what a body prints in
+  // has nothing to do with whether it can be printed. The colours it is handed
+  // are still the build's four or eight, and a green top matched against them
+  // lands on slot 1 -- a group that, in a call for one group, does not exist.
+  // That threw, and it threw on the default setting, so the button that says
+  // what is wrong with a build was the one thing that could not be pressed.
+  let thrown: string | null = null;
+  let groups = -1;
+  let solids = 0;
+  let volume = 0;
+  try {
+    const grouped = solidsBySlot(model, {}, 1, options(true));
+    groups = grouped.length;
+    for (const group of grouped) {
+      for (const solid of group) {
+        solids++;
+        const low = [Infinity, Infinity, Infinity];
+        const high = [-Infinity, -Infinity, -Infinity];
+        for (const corner of solid) {
+          for (let axis = 0; axis < 3; axis++) {
+            low[axis] = Math.min(low[axis]!, corner[axis]!);
+            high[axis] = Math.max(high[axis]!, corner[axis]!);
+          }
+        }
+        volume += (high[0]! - low[0]!) * (high[1]! - low[1]!) * (high[2]! - low[2]!);
+      }
+    }
+  } catch (error) {
+    thrown = error instanceof Error ? error.message : String(error);
+  }
+  if (thrown !== null) {
+    fail(`one group with two colours threw: ${thrown}`);
+  } else if (groups === 1 && Math.abs(volume - 1000) < 1e-6) {
+    ok(`one group with two colours holds the whole block: ${solids} bodies, ${volume.toFixed(0)} mm3`);
+  } else {
+    fail(`one group with two colours gave ${groups} groups and ${volume.toFixed(1)} mm3, wanted 1 and 1000`);
+  }
+}
+
 console.log(problems === 0 ? "\nALLE PRUEFUNGEN BESTANDEN" : `\n${problems} PROBLEME`);
 process.exit(problems === 0 ? 0 : 1);

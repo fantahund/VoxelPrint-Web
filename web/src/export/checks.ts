@@ -221,9 +221,13 @@ export function inspect(
   const pieces = piecesOf(structure, indices, removed);
   const blocks = pieces.reduce((sum, piece) => sum + piece, 0);
 
-  // One group: which filament a body prints in has nothing to do with whether
-  // it can be printed at all.
-  const bodies = solidsBySlot(model, {}, 1, options)[0] ?? [];
+  // One group, and no colour per face: which filament a body prints in has
+  // nothing to do with whether it can be printed at all. Leaving the face
+  // matching on would also cut every box into a body and its colour skins, and
+  // report those skins -- fused to the body, never printed on their own -- as
+  // walls too thin for the nozzle.
+  const bodies =
+    solidsBySlot(model, {}, 1, { ...options, perFace: false, slotColours: undefined })[0] ?? [];
   let thin = 0;
   let thinnest = Infinity;
   const low = [0, 0, 0];

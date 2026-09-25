@@ -187,9 +187,13 @@ export function solidsBySlot(
   /** Whether this block's type is one somebody has already put in a filament. */
   const spoken = (paletteIndex: number): boolean =>
     options.spokenFor?.has(model.blockIds[paletteIndex] as string) === true;
+  // Only the colours there are slots for. A caller that asks for fewer groups
+  // than it has colours -- the printability check asks for one, because what a
+  // body prints in has nothing to do with whether it can be printed -- would
+  // otherwise have faces matched to a slot no group exists for.
   const slotPlaces =
     options.perFace === true && options.slotColours !== undefined && options.slotColours.length > 0
-      ? options.slotColours.map(toOklab)
+      ? options.slotColours.slice(0, slotCount).map(toOklab)
       : null;
   /** Solid boxes per filament, joined across shapes once they are all in. */
   const volumes: Point[][][] = Array.from({ length: slotCount }, () => []);
@@ -347,6 +351,8 @@ export function solidsBySlot(
             : skinned(whole, sides, wallInBlocks);
 
         for (const body of bodies) {
+          // Held inside the groups that exist, the way the plate's parts are.
+          const into = Math.min(Math.max(body.slot, 0), slotCount - 1);
           const corners = CORNERS.map((corner) =>
             place(
               corner[0] === 0 ? body.box[0] : body.box[3],
@@ -354,7 +360,7 @@ export function solidsBySlot(
               corner[2] === 0 ? body.box[2] : body.box[5],
             ),
           );
-          (volumes[body.slot] as Point[][]).push(corners);
+          (volumes[into] as Point[][]).push(corners);
         }
 
         // The sides of the whole box still hide what presses against them, but
