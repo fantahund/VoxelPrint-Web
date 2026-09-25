@@ -94,6 +94,24 @@ export interface PrintingPlan {
   updatedAt?: string;
 }
 
+/**
+ * What an imported schematic had to be guessed at.
+ *
+ * <p>A schematic carries block names and nothing else, so every shape and
+ * colour in it was either remembered from somebody's export or worked out from
+ * a relative. Worth showing rather than hiding: a build that is mostly guesses
+ * is mostly cubes, and that is better learnt before printing than after.
+ */
+export interface ImportReport {
+  format: "sponge" | "litematica" | "mcedit";
+  states: number;
+  counted: Record<"exact" | "namespace" | "family" | "dressed" | "guessed", number>;
+  guessedBlocks: number;
+  blocks: number;
+  examples: Array<{ state: string; how: string; from: string | null }>;
+  notes: string[];
+}
+
 export interface Project {
   id: string;
   uploadedAt: string;
@@ -105,4 +123,6 @@ export interface Project {
   };
   /** What was last saved for this project, if anything. */
   printing?: PrintingPlan | null;
+  /** Present only when the project came from a schematic rather than an export. */
+  imported?: ImportReport;
 }

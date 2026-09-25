@@ -7,6 +7,7 @@ import { config } from "./config.js";
 import { FilamentLibrary } from "./filaments/library.js";
 import { registerFilamentRoutes } from "./routes/filaments.js";
 import { registerProjectRoutes } from "./routes/projects.js";
+import { BlockLibrary } from "./blocks/library.js";
 import { registerSkinRoutes } from "./routes/skins.js";
 import { ProjectStore } from "./storage/projectStore.js";
 
@@ -25,10 +26,14 @@ await app.register(fastifyMultipart, {
 
 await mkdir(config.dataDirectory, { recursive: true });
 const store = new ProjectStore(config.dataDirectory);
+// What blocks look like, learned from every .mcprint and spent on every
+// schematic. A cache: deleting it costs nothing but poorer imports.
+const blocks = new BlockLibrary(`${config.dataDirectory}/block-library.json`);
+app.log.info({ known: await blocks.load() }, "Block library");
 
 app.get("/api/health", async () => ({ status: "ok" }));
 
-registerProjectRoutes(app, store);
+registerProjectRoutes(app, store, blocks);
 registerSkinRoutes(app);
 
 /**

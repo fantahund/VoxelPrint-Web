@@ -79,7 +79,7 @@ import {
   type VoxelModel,
 } from "./viewer/buildVoxels";
 import Viewer from "./viewer/Viewer";
-import type { BlockModels, Project, StructureInfo } from "./types";
+import type { BlockModels, ImportReport, Project, StructureInfo } from "./types";
 
 const numberFormat = new Intl.NumberFormat();
 
@@ -181,6 +181,84 @@ function bytes(value: number): string {
     return `${(value / 1024).toFixed(1)} kB`;
   }
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * What an import had to guess at.
+ *
+ * <p>Shown as a share of blocks rather than of block states, because one
+ * guessed state used a thousand times is a building made of cubes and nine
+ * known ones used once are not.
+ */
+function Imported({ report }: { report: ImportReport }): React.ReactElement {
+  const named: Record<string, string> = {
+    sponge: "WorldEdit .schem",
+    litematica: "Litematica",
+    mcedit: "MCEdit .schematic",
+  };
+  const share = report.blocks === 0 ? 0 : report.guessedBlocks / report.blocks;
+  const borrowed = report.counted.namespace + report.counted.family + report.counted.dressed;
+  return (
+    <Panel title="Imported">
+      <Flex direction="column" gap="2">
+        <Text as="p" size="1" color="gray">
+          A {named[report.format] ?? report.format} carries block names and nothing else, so what
+          each block looks like was remembered from other people&rsquo;s exports or worked out from
+          a relative.
+        </Text>
+        <DataList.Root size="1" orientation="vertical" trim="both">
+          <DataList.Item>
+            <DataList.Label minWidth="7rem">Known outright</DataList.Label>
+            <DataList.Value>
+              {report.counted.exact} of {report.states} block states
+            </DataList.Value>
+          </DataList.Item>
+          <DataList.Item>
+            <DataList.Label minWidth="7rem">Borrowed</DataList.Label>
+            <DataList.Value>{borrowed} from a relative, turned to match</DataList.Value>
+          </DataList.Item>
+          <DataList.Item>
+            <DataList.Label minWidth="7rem">Guessed</DataList.Label>
+            <DataList.Value>
+              {report.counted.guessed} state{report.counted.guessed === 1 ? "" : "s"}, printing as
+              cubes &mdash; {(share * 100).toFixed(share < 0.1 ? 1 : 0)}% of the blocks
+            </DataList.Value>
+          </DataList.Item>
+        </DataList.Root>
+        {share > 0.15 ? (
+          <Callout.Root size="1" color="amber">
+            <Callout.Text>
+              A good deal of this build is cubes, because nobody has exported these blocks with the
+              mod yet. Exporting a build containing them once teaches the site their shapes for
+              everybody, this import included if you upload it again.
+            </Callout.Text>
+          </Callout.Root>
+        ) : null}
+        {report.notes.map((note) => (
+          <Callout.Root size="1" color="gray" key={note}>
+            <Callout.Text>{note}</Callout.Text>
+          </Callout.Root>
+        ))}
+        {report.examples.length > 0 ? (
+          <Box>
+            <Text as="div" size="1" weight="medium" mb="1">
+              Where the shapes came from
+            </Text>
+            <Flex direction="column" gap="1">
+              {report.examples.slice(0, 6).map((example) => (
+                <Text as="div" size="1" color="gray" key={example.state} className="truncate">
+                  <code>{example.state.split("[")[0]}</code>{" "}
+                  {example.from === null
+                    ? "\u2014 nothing related was known"
+                    : `\u2190 ${example.from.split("[")[0]}`}
+                </Text>
+              ))}
+            </Flex>
+          </Box>
+        ) : null}
+      </Flex>
+    </Panel>
+  );
 }
 
 function Facts({ project }: { project: Project }): React.ReactElement {
@@ -2381,7 +2459,9 @@ export default function App(): React.ReactElement {
                   Turn a Minecraft build into something a printer understands
                 </Heading>
                 <Text as="p" size="2" color="gray">
-                  Drop the <code>.mcprint</code> your VoxelPrint mod exported.
+                  Drop the <code>.mcprint</code> your VoxelPrint mod exported, or a
+                  schematic: <code>.schem</code>, <code>.litematic</code> or
+                  <code>.schematic</code>.
                 </Text>
               </Box>
 
@@ -2412,12 +2492,12 @@ export default function App(): React.ReactElement {
               >
                 <input
                   type="file"
-                  accept=".mcprint"
+                  accept=".mcprint,.schem,.litematic,.schematic,.nbt"
                   disabled={busy}
                   onChange={(event) => void accept(event.target.files?.[0])}
                 />
                 <Text size="2" color={dragging ? undefined : "gray"}>
-                  {busy ? "Reading \u2026" : "Drop a .mcprint here, or click to choose one"}
+                  {busy ? "Reading \u2026" : "Drop a file here, or click to choose one"}
                 </Text>
               </label>
 
@@ -2650,6 +2730,9 @@ export default function App(): React.ReactElement {
                     <>
                       <Separator size="4" />
                       <Facts project={project} />
+                      {project.imported === undefined ? null : (
+                        <Imported report={project.imported} />
+                      )}
                     </>
                   )}
                 </>

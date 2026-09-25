@@ -29,6 +29,8 @@ export class ProjectStore {
     contents: ProjectContents,
     indices: Uint8Array,
     models: BlockModels | null,
+    /** What to call the kept original. A schematic is not an .mcprint. */
+    sourceName = "source.mcprint",
   ): Promise<StoredProject> {
     const project: StoredProject = {
       id: randomUUID(),
@@ -39,7 +41,7 @@ export class ProjectStore {
 
     const directory = this.directoryFor(project.id);
     await mkdir(directory, { recursive: true });
-    await writeFile(path.join(directory, "source.mcprint"), archive);
+    await writeFile(path.join(directory, sourceName), archive);
     await writeFile(path.join(directory, "indices.bin"), indices);
     if (models !== null) {
       // Kept out of the project document and fetched on its own: it is read

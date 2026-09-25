@@ -2,12 +2,27 @@ import type { FastifyInstance } from "fastify";
 import { config } from "../config.js";
 import { McPrintError } from "../mcprint/archive.js";
 import { readProject } from "../mcprint/readProject.js";
+import type { BlockLibrary } from "../blocks/library.js";
+import { dress } from "../schematic/dress.js";
+import { readSchematic, SchematicError } from "../schematic/read.js";
 import { printingPlanSchema } from "../printing.js";
 import type { ProjectStore } from "../storage/projectStore.js";
 
 const ACCEPTED_EXTENSION = ".mcprint";
+/**
+ * Schematics, which carry names and nothing else.
+ *
+ * <p>Taken on the same endpoint as an export rather than a separate one,
+ * because what comes back is the same project either way and the person
+ * uploading is doing the same thing.
+ */
+const SCHEMATICS = [".schem", ".litematic", ".schematic", ".nbt"];
 
-export function registerProjectRoutes(app: FastifyInstance, store: ProjectStore): void {
+export function registerProjectRoutes(
+  app: FastifyInstance,
+  store: ProjectStore,
+  library: BlockLibrary,
+): void {
   /** Accepts an upload and answers with what the file contains. */
   app.post("/api/projects", async (request, reply) => {
     const upload = await request.file();
@@ -15,8 +30,12 @@ export function registerProjectRoutes(app: FastifyInstance, store: ProjectStore)
       return reply.status(400).send({ error: "No file was sent." });
     }
 
-    if (!upload.filename.toLowerCase().endsWith(ACCEPTED_EXTENSION)) {
-      return reply.status(415).send({ error: "Only .mcprint files are accepted." });
+    const name = upload.filename.toLowerCase();
+    const schematic = SCHEMATICS.find((suffix) => name.endsWith(suffix));
+    if (!name.endsWith(ACCEPTED_EXTENSION) && schematic === undefined) {
+      return reply
+        .status(415)
+        .send({ error: `Only ${ACCEPTED_EXTENSION} and ${SCHEMATICS.join(", ")} files are accepted.` });
     }
 
     const archive = await upload.toBuffer();
@@ -24,6 +43,31 @@ export function registerProjectRoutes(app: FastifyInstance, store: ProjectStore)
       return reply
         .status(413)
         .send({ error: `The file is larger than the allowed ${config.limits.uploadBytes} bytes.` });
+    }
+
+    if (schematic !== undefined) {
+      try {
+        const read = readSchematic(archive, config.limits.structureBytes);
+        const built = dress(read, library, `source${schematic}`);
+        const project = await store.save(
+          upload.filename,
+          archive,
+          built.contents,
+          built.indices,
+          built.models,
+          `source${schematic}`,
+        );
+        return reply.status(201).send({
+          ...project,
+          imported: { ...built.report, format: read.format, notes: read.notes },
+        });
+      } catch (error) {
+        if (error instanceof SchematicError) {
+          return reply.status(422).send({ error: error.message });
+        }
+        request.log.error({ err: error }, "Failed to read a schematic");
+        return reply.status(500).send({ error: "The schematic could not be read." });
+      }
     }
 
     try {
@@ -34,6 +78,16 @@ export function registerProjectRoutes(app: FastifyInstance, store: ProjectStore)
         shapesBytes: config.limits.shapesBytes,
         modelsBytes: config.limits.modelsBytes,
       });
+      // Everything an export knows about how blocks look is worth keeping: it
+      // is the only place that knowledge ever comes from, and it is what every
+      // later schematic import is dressed in.
+      const learned = library.learn(contents.structure.palette, contents.structure.shapes, models);
+      if (learned > 0) {
+        request.log.info({ learned, known: library.size }, "Learned block shapes from an upload");
+        void library.save().catch((error: unknown) => {
+          request.log.warn({ err: error }, "Could not write the block library");
+        });
+      }
       const project = await store.save(upload.filename, archive, contents, indices, models);
       return reply.status(201).send(project);
     } catch (error) {
