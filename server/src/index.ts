@@ -8,6 +8,7 @@ import { FilamentLibrary } from "./filaments/library.js";
 import { registerFilamentRoutes } from "./routes/filaments.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { BlockLibrary } from "./blocks/library.js";
+import { LegacyNames } from "./schematic/legacyNames.js";
 import { registerSkinRoutes } from "./routes/skins.js";
 import { ProjectStore } from "./storage/projectStore.js";
 
@@ -30,10 +31,13 @@ const store = new ProjectStore(config.dataDirectory);
 // schematic. A cache: deleting it costs nothing but poorer imports.
 const blocks = new BlockLibrary(`${config.dataDirectory}/block-library.json`);
 app.log.info({ known: await blocks.load() }, "Block library");
+// And what the numbers in pre-1.13 files meant, learned from the files that say.
+const legacyNames = new LegacyNames(`${config.dataDirectory}/legacy-block-ids.json`);
+app.log.info({ known: await legacyNames.load() }, "Pre-1.13 block ids");
 
 app.get("/api/health", async () => ({ status: "ok" }));
 
-registerProjectRoutes(app, store, blocks);
+registerProjectRoutes(app, store, blocks, legacyNames);
 registerSkinRoutes(app);
 
 /**

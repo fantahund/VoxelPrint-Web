@@ -18,6 +18,7 @@
  */
 import { gzipSync } from "node:zlib";
 import { readSchematic } from "../server/src/schematic/read.js";
+import { LegacyNames } from "../server/src/schematic/legacyNames.js";
 
 let problems = 0;
 const fail = (m: string): void => { problems++; console.log("  FAIL " + m); };
@@ -365,6 +366,90 @@ const airOr = (index: number): string => (index === 0 ? "minecraft:air" : PALETT
   }
   if (threw === cases.length) {
     ok(`all ${cases.length} things that are not schematics were refused rather than half-read`);
+  }
+}
+
+// --- numbers learned from the files that name them ----------------------------
+{
+  // The old format cannot name a modded block. A file that brought its own list
+  // is the only source there will ever be, so it is kept and spent on the files
+  // that bring none.
+  const withList = nbt("Schematic", compound({
+    Width: short(2), Height: short(1), Length: short(1),
+    Blocks: { t: "bytes", v: Uint8Array.from([300 & 0xff, 0]) },
+    Add: { t: "bytes", v: Uint8Array.from([0x10]) },
+    Data: { t: "bytes", v: new Uint8Array(2) },
+    SchematicaMapping: compound({ "create:cogwheel": short(300) }),
+  }));
+  const bare = nbt("Schematic", compound({
+    Width: short(2), Height: short(1), Length: short(1),
+    Blocks: { t: "bytes", v: Uint8Array.from([300 & 0xff, 0]) },
+    Add: { t: "bytes", v: Uint8Array.from([0x10]) },
+    Data: { t: "bytes", v: new Uint8Array(2) },
+  }));
+
+  const names = new LegacyNames("/dev/null");
+  const first = readSchematic(withList, 1 << 20, names.lookup());
+  if (first.learnedNames?.get(300) === "create:cogwheel") {
+    ok("a file's own id list is handed back so it can be kept");
+  } else {
+    fail("a file's id list was read but not handed back");
+  }
+  names.learn(first.learnedNames ?? new Map());
+
+  const blind = readSchematic(bare, 1 << 20, new Map());
+  const helped = readSchematic(bare, 1 << 20, names.lookup());
+  if (!blind.palette.includes("create:cogwheel") && helped.palette.includes("create:cogwheel")) {
+    ok("and a later file with no list of its own is named from it");
+  } else {
+    fail(`without the cache: ${blind.palette.join(", ")}; with it: ${helped.palette.join(", ")}`);
+  }
+  if (helped.notes.some((note) => note.includes("per installation"))) {
+    ok("and the import says plainly that a borrowed number is a guess, not a fact");
+  } else {
+    fail("nothing warned that a borrowed id may belong to another modpack");
+  }
+}
+
+// --- and a borrowed number never moves a vanilla block ------------------------
+{
+  // Stone is id 1 and always was. A file claiming otherwise is a file to
+  // disbelieve, and no list may override the built-in table.
+  const names = new LegacyNames("/dev/null");
+  names.learn(new Map([[1, "somemod:definitely_not_stone"]]));
+  const file = nbt("Schematic", compound({
+    Width: short(1), Height: short(1), Length: short(1),
+    Blocks: { t: "bytes", v: Uint8Array.from([1]) },
+    Data: { t: "bytes", v: new Uint8Array(1) },
+  }));
+  const read = readSchematic(file, 1 << 20, names.lookup());
+  if (read.palette.includes("minecraft:stone") && !read.palette.some((s) => s.startsWith("somemod:"))) {
+    ok("a learned name cannot move a vanilla block: stone stays stone");
+  } else {
+    fail(`id 1 came back as ${read.palette.join(", ")}`);
+  }
+}
+
+// --- files that disagree settle nothing ---------------------------------------
+{
+  // Mods hand ids out per installation, so two packs really can mean different
+  // blocks by 300. One vote more is not an answer; it has to be unknown.
+  const split = new LegacyNames("/dev/null");
+  split.learn(new Map([[300, "create:cogwheel"]]));
+  split.learn(new Map([[300, "thermal:machine_frame"]]));
+  const contested = split.nameOf(300);
+
+  const agreed = new LegacyNames("/dev/null");
+  for (let time = 0; time < 4; time++) {
+    agreed.learn(new Map([[300, "create:cogwheel"]]));
+  }
+  agreed.learn(new Map([[300, "thermal:machine_frame"]]));
+  const settled = agreed.nameOf(300);
+
+  if (contested === null && settled?.name === "create:cogwheel" && settled.contested) {
+    ok("two packs disagreeing about a number leaves it unknown, four against one does not");
+  } else {
+    fail(`contested came back ${JSON.stringify(contested)}, settled ${JSON.stringify(settled)}`);
   }
 }
 

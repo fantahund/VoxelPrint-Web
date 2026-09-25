@@ -3,6 +3,7 @@ import { readNbt } from "../mcprint/nbt.js";
 import { readLitematic } from "./litematic.js";
 import { readMcEdit } from "./mcedit.js";
 import { readSponge } from "./sponge.js";
+import type { LegacyName } from "./legacyNames.js";
 import { SchematicError, type SchematicRead } from "./types.js";
 
 /**
@@ -29,7 +30,12 @@ function unwrap(bytes: Uint8Array, limit: number): Uint8Array {
   return bytes;
 }
 
-export function readSchematic(bytes: Uint8Array, limit = 256 << 20): SchematicRead {
+export function readSchematic(
+  bytes: Uint8Array,
+  limit = 256 << 20,
+  /** What other uploads taught about pre-1.13 block ids. */
+  learned: ReadonlyMap<number, LegacyName> = new Map(),
+): SchematicRead {
   const plain = unwrap(bytes, limit);
   let root;
   try {
@@ -51,7 +57,7 @@ export function readSchematic(bytes: Uint8Array, limit = 256 << 20): SchematicRe
   }
   // And the old one, which is the only thing left that has Blocks as bytes.
   if (root.Blocks instanceof Uint8Array) {
-    return readMcEdit(root);
+    return readMcEdit(root, learned);
   }
   throw new SchematicError(
     "this file is NBT, but not a schematic: no Regions, no Palette and no Blocks.",

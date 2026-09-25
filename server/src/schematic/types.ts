@@ -19,6 +19,13 @@ export interface SchematicRead {
   readonly name: string | null;
   /** Anything worth telling the person who uploaded it. */
   readonly notes: readonly string[];
+  /**
+   * The id-to-name list this file carried, when it carried one.
+   *
+   * <p>Handed back so it can be kept: the old format cannot name a modded
+   * block, and a file that does is the only source there will ever be.
+   */
+  readonly learnedNames?: ReadonlyMap<number, string>;
 }
 
 export class SchematicError extends Error {}

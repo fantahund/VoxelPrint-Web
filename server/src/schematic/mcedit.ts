@@ -1,5 +1,6 @@
 import { isCompound, type NbtCompound, type NbtValue } from "../mcprint/nbt.js";
 import { knowsLegacy, legacyState } from "./legacy.js";
+import type { LegacyName } from "./legacyNames.js";
 import { normalise, reorder, SchematicError, type SchematicRead } from "./types.js";
 
 /**
@@ -45,7 +46,11 @@ function mappingOf(root: NbtCompound): Map<number, string> | null {
   return byId.size > 0 ? byId : null;
 }
 
-export function readMcEdit(root: NbtCompound): SchematicRead {
+export function readMcEdit(
+  root: NbtCompound,
+  /** Names other uploads taught, for ids this file does not name itself. */
+  learned: ReadonlyMap<number, LegacyName> = new Map(),
+): SchematicRead {
   const width = short(root.Width, "Width");
   const height = short(root.Height, "Height");
   const depth = short(root.Length, "Length");
@@ -68,6 +73,7 @@ export function readMcEdit(root: NbtCompound): SchematicRead {
   const known = new Map<string, number>();
   const indices = new Uint32Array(count);
   const unknown = new Set<number>();
+  const borrowed = new Set<number>();
 
   for (let at = 0; at < count; at++) {
     let id = blocks[at] as number;
@@ -84,6 +90,11 @@ export function readMcEdit(root: NbtCompound): SchematicRead {
     let state: string;
     if (named !== undefined) {
       state = named.includes(":") ? named : `minecraft:${named}`;
+    } else if (!knowsLegacy(id) && learned.has(id)) {
+      // Nothing in this file says what this is, but other files did. Only for
+      // ids the table does not cover, so a borrowed name cannot move stone.
+      state = (learned.get(id) as LegacyName).name;
+      borrowed.add(id);
     } else {
       if (id !== 0 && !knowsLegacy(id)) {
         unknown.add(id);
@@ -107,6 +118,12 @@ export function readMcEdit(root: NbtCompound): SchematicRead {
   if (mapping !== null) {
     notes.push("It carried its own list of block names, which was used instead of the table.");
   }
+  if (borrowed.size > 0) {
+    notes.push(
+      `${borrowed.size} block ${borrowed.size === 1 ? "id was" : "ids were"} named from lists other uploads carried. ` +
+        "Mods hand those numbers out per installation, so those blocks are a likely guess rather than a certainty.",
+    );
+  }
   if (unknown.size > 0) {
     notes.push(
       `${unknown.size} block ${unknown.size === 1 ? "id was" : "ids were"} not in the table and came through as stone.`,
@@ -122,5 +139,6 @@ export function readMcEdit(root: NbtCompound): SchematicRead {
     indices: tidy.indices,
     name: null,
     notes,
+    ...(mapping === null ? {} : { learnedNames: mapping }),
   };
 }

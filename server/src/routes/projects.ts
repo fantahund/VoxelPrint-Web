@@ -5,6 +5,7 @@ import { readProject } from "../mcprint/readProject.js";
 import type { BlockLibrary } from "../blocks/library.js";
 import { dress } from "../schematic/dress.js";
 import { readSchematic, SchematicError } from "../schematic/read.js";
+import type { LegacyNames } from "../schematic/legacyNames.js";
 import { printingPlanSchema } from "../printing.js";
 import type { ProjectStore } from "../storage/projectStore.js";
 
@@ -22,6 +23,7 @@ export function registerProjectRoutes(
   app: FastifyInstance,
   store: ProjectStore,
   library: BlockLibrary,
+  legacyNames: LegacyNames,
 ): void {
   /** Accepts an upload and answers with what the file contains. */
   app.post("/api/projects", async (request, reply) => {
@@ -47,7 +49,18 @@ export function registerProjectRoutes(
 
     if (schematic !== undefined) {
       try {
-        const read = readSchematic(archive, config.limits.structureBytes);
+        const read = readSchematic(archive, config.limits.structureBytes, legacyNames.lookup());
+        // The old format cannot name a modded block, so a file that does is
+        // the only source there will ever be. Kept for the files that do not.
+        if (read.learnedNames !== undefined) {
+          const learned = legacyNames.learn(read.learnedNames);
+          if (learned > 0) {
+            request.log.info({ learned, known: legacyNames.size }, "Learned pre-1.13 block ids");
+            void legacyNames.save().catch((error: unknown) => {
+              request.log.warn({ err: error }, "Could not write the block id list");
+            });
+          }
+        }
         const built = dress(read, library, `source${schematic}`);
         const project = await store.save(
           upload.filename,
