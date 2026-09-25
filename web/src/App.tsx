@@ -261,6 +261,24 @@ function Imported({ report }: { report: ImportReport }): React.ReactElement {
   );
 }
 
+type StandSize = "thickness" | "margin" | "label";
+
+/**
+ * The stand's proportions, as a share of one block.
+ *
+ * <p>The numbers are the old fixed defaults -- two, two and six millimetres --
+ * read against the ten millimetre block they were chosen for. So nothing moves
+ * for anybody printing at ten, and everything scales for everybody else.
+ */
+const STAND: Readonly<Record<StandSize, number>> = {
+  thickness: 0.2,
+  margin: 0.2,
+  label: 0.6,
+};
+
+/** A size rounded the way the fields show it, so the number does not jitter. */
+const tidy = (value: number): number => Math.round(value * 10) / 10;
+
 function Facts({ project }: { project: Project }): React.ReactElement {
   const { manifest, structure } = project.contents;
   const { size } = manifest;
@@ -752,10 +770,20 @@ function Download({
 }): React.ReactElement {
   const [millimetres, setMillimetres] = useState(startingSize);
   const [plate, setPlate] = useState<Plate>("off");
-  const [plateThickness, setPlateThickness] = useState(2);
-  const [plateMargin, setPlateMargin] = useState(2);
+  const [plateThickness, setPlateThickness] = useState(startingSize * STAND.thickness);
+  const [plateMargin, setPlateMargin] = useState(startingSize * STAND.margin);
   const [label, setLabel] = useState(name);
-  const [labelSize, setLabelSize] = useState(6);
+  const [labelSize, setLabelSize] = useState(startingSize * STAND.label);
+  /**
+   * Which of the stand's three sizes somebody has typed a number into.
+   *
+   * <p>Until one is touched it follows the blocks: a build printed twice as
+   * large stands on a stand twice as thick, with its name written twice as
+   * large, because a three millimetre lip under a two hundred millimetre
+   * castle is not a stand, it is a shadow. Once a number is typed it is that
+   * person's number and stops following.
+   */
+  const [standSet, setStandSet] = useState<ReadonlySet<StandSize>>(new Set());
   const [geometry, setGeometry] = useState<Geometry>("shell");
   const [wall, setWall] = useState(1.2);
   /**
@@ -800,6 +828,24 @@ function Download({
   const opener = (which: string) => (open: boolean) => setSection(open ? which : null);
 
   /** The plate as the rest of the site wants it, whole rather than in pieces. */
+  // The stand follows the blocks, for every size nobody has claimed.
+  useEffect(() => {
+    if (!standSet.has("thickness")) {
+      setPlateThickness(tidy(millimetres * STAND.thickness));
+    }
+    if (!standSet.has("margin")) {
+      setPlateMargin(tidy(millimetres * STAND.margin));
+    }
+    if (!standSet.has("label")) {
+      setLabelSize(tidy(millimetres * STAND.label));
+    }
+  }, [millimetres, standSet]);
+
+  /** Marks a size as somebody's own, so it stops following the blocks. */
+  const claim = useCallback((which: StandSize): void => {
+    setStandSet((set) => (set.has(which) ? set : new Set([...set, which])));
+  }, []);
+
   const plateOptions: PlateOptions = useMemo(
     () => ({
       plate,
@@ -1029,6 +1075,7 @@ function Download({
                     onChange={(event) => {
                       const next = Number(event.target.value);
                       if (Number.isFinite(next) && next > 0) {
+                        claim("thickness");
                         setPlateThickness(Math.min(next, 50));
                       }
                     }}
@@ -1055,6 +1102,7 @@ function Download({
                     onChange={(event) => {
                       const next = Number(event.target.value);
                       if (Number.isFinite(next) && next >= 0) {
+                        claim("margin");
                         setPlateMargin(Math.min(next, 100));
                       }
                     }}
@@ -1067,6 +1115,12 @@ function Download({
                   </TextField.Root>
                 </Box>
               </Flex>
+              {standSet.size < 3 ? (
+                <Text as="p" size="1" color="gray" mt="1">
+                  These follow the block size, so a build printed larger stands on a larger
+                  plate. Type a number and that one stays as you set it.
+                </Text>
+              ) : null}
 
               {plate === "labelled" && (
                 <>
@@ -1090,6 +1144,7 @@ function Download({
                         onChange={(event) => {
                           const next = Number(event.target.value);
                           if (Number.isFinite(next) && next > 0) {
+                            claim("label");
                             setLabelSize(Math.min(next, 100));
                           }
                         }}

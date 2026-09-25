@@ -14,6 +14,7 @@ import {
   GLYPH_WIDTH,
   glyph,
   plateOf,
+  labelFit,
   readable,
   type PlateOptions,
 } from "../web/src/export/plate.js";
@@ -242,6 +243,62 @@ const plate = (over: Partial<PlateOptions> = {}): PlateOptions => ({
     ok("and without a plate it stands on the bed exactly as it did before");
   } else {
     fail(`without a plate the lowest point is ${bareLow}`);
+  }
+}
+
+// --- a stand grows with the blocks it stands under ----------------------------
+{
+  // The sizes are in millimetres and the plate works in blocks, so doubling the
+  // block size while leaving the millimetres alone makes the stand relatively
+  // half as thick: a three millimetre lip under a two hundred millimetre castle
+  // is a shadow, not a stand. The interface scales the three sizes with the
+  // block, and this is what that has to come out as -- the same stand, twice as
+  // large, everywhere, not merely thicker.
+  const SHARE = { thickness: 0.2, margin: 0.2, label: 0.6 };
+  const at = (millimetres: number) =>
+    plateOf(model, millimetres, plate({
+      label: "VOXEL",
+      plateMillimetres: millimetres * SHARE.thickness,
+      plateMargin: millimetres * SHARE.margin,
+      labelMillimetres: millimetres * SHARE.label,
+    }));
+
+  const small = at(10);
+  const large = at(20);
+
+  if (small.length !== large.length) {
+    fail(`ten millimetre blocks gave ${small.length} parts and twenty gave ${large.length}`);
+  } else {
+    // In millimetres, not in blocks: the whole point is the printed size.
+    let worst = 0;
+    for (let part = 0; part < small.length; part++) {
+      const a = small[part]?.box as readonly number[];
+      const b = large[part]?.box as readonly number[];
+      for (let corner = 0; corner < 6; corner++) {
+        const want = (a[corner] as number) * 10 * 2;
+        const got = (b[corner] as number) * 20;
+        worst = Math.max(worst, Math.abs(want - got));
+      }
+    }
+    if (worst < 1e-6) {
+      ok(`a stand at twice the block size is exactly twice the stand, all ${small.length} parts of it`);
+    } else {
+      fail(`a stand at twice the block size is out by ${worst.toFixed(4)} mm`);
+    }
+  }
+
+  // And the letters really are twice as tall, rather than the plate growing
+  // around writing that stayed where it was.
+  const smallFit = labelFit(model, 10, plate({
+    label: "VOXEL", plateMargin: 2, labelMillimetres: 6,
+  }));
+  const largeFit = labelFit(model, 20, plate({
+    label: "VOXEL", plateMargin: 4, labelMillimetres: 12,
+  }));
+  if (Math.abs(largeFit.height - smallFit.height * 2) < 1e-6) {
+    ok(`and its name grows with it: ${smallFit.height.toFixed(1)} mm to ${largeFit.height.toFixed(1)} mm`);
+  } else {
+    fail(`letters went from ${smallFit.height} mm to ${largeFit.height} mm, wanted double`);
   }
 }
 
